@@ -208,10 +208,11 @@ class MirFunc(BaseFunc):
     def __init__(self, crate, fndef_info, bb_list):
         super().__init__()
         self.crate = crate
+        self.origin_decl = fndef_info
         self.analyse_def(fndef_info)
         if self.valid():
             self.raw_bb_list = bb_list
-            super()._gen_identifier()
+            self._gen_identifier()
 
     def analyse_def(self, fndef_info):
         if fndef_info.startswith('[closure@'):
@@ -276,7 +277,7 @@ class MirBb():
             'ref_strs': self.ref_strs,
         }
 
-    def to_str(self):
+    def into_str(self):
         return '\n'.join(self.statements) + f'\n{self.term_str()}'
 
     def term_str(self):
@@ -332,12 +333,13 @@ class BinFunc(BaseFunc):
         self.target_crate = target_crate
         self.bin_file_name = info_dict['identifier']
         self.addr_ranges = info_dict['addr_ranges']
-        if '{closure}' in info_dict['function_name']:
+        self.origin_decl = info_dict['function_name']
+        if '{closure}' in self.origin_decl:
             self.errno = FunctionAnalErrorCode.Closure
             return
-        self.analyse_decl(info_dict['function_name'])
+        self.analyse_decl(self.origin_decl)
         if self.valid():
-            super()._gen_identifier()
+            self._gen_identifier()
             self.analyse_bb_list(info_dict['basic_block'])
 
     def analyse_decl(self, decl):

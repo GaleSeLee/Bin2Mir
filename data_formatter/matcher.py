@@ -1,9 +1,6 @@
 import os
-import sys
 
-import time
 import json
-import re
 
 from data_formatter.analyser import MirAnalyser, BinaryAnalyser
 from data_formatter.func import BinFunc, MirFunc
@@ -50,13 +47,14 @@ class Matcher():
                 self.add_pair(func, rigid_match_list[0])
             else:
                 self.add_dumplicate_match(func, coarse_matched_list)
+        self.session.commit()
 
     def dump_match(self, file_name, **kwargs):
         dump_list = []
-        self.bin_analyser.load(**kwargs)
+        self.bin_analyser.load_matched(**kwargs)
         for func in self.bin_analyser.activated():
             mir_func = self.session.query(MirFunc).filter_by(
-                identifier=func.mir_func).first()
+                identifier=func.match_mir).first()
             self.bin_analyser.load_func_data(func)
             self.mir_analyser.load_func_data(mir_func)
             dump_list.append(self.full_formatter(func, mir_func))
@@ -76,7 +74,7 @@ class Matcher():
     def add_dumplicate_match(self, bin_func, mir_list):
         # self.dumplicate_list.append((bin_func.into_str(), [mir_func.into_str() for mir_func in mir_list]))
         self.session.query(BinFunc).filter_by(identifier=bin_func.identifier).update(
-            {'match_mir': ':'.join([mir_func.identifier for mir_func in mir_list])})
+            {'coarse_list': ':'.join([mir_func.identifier for mir_func in mir_list])})
         # self.session.commit()
 
     def dump_statistics(self, file_path: str):
@@ -93,8 +91,6 @@ class Matcher():
             ([func.crate for func in self.bin_analyser.funcs]))
         bin_activated_crates = crate_cnt(
             [func.crate for func in self.bin_analyser.activated()])
-        mir_crates = crate_cnt(
-            ([func.crate for func in self.mir_analyser.funcs]))
         matched_bin_crates = crate_cnt(
             ([pair[0].crate for pair in self.matched_list]))
         # matched_mir_crates = crate_cnt(set([pair[1].crate for pair in self.matched_list]))
@@ -105,11 +101,6 @@ class Matcher():
                 'crates': [key for key in bin_crates.keys()],
                 'crate_cnt': bin_crates,
                 'activated_crate_cnt': bin_activated_crates
-            },
-            'mir_func_info': {
-                'total_num': len(self.mir_analyser.funcs),
-                'crates': [key for key in mir_crates.keys()],
-                'crate_cnt': mir_crates,
             },
             'matched_func_info': {
                 'matched_num': len(self.matched_list),
@@ -122,8 +113,7 @@ class Matcher():
             json.dump(dump_dict, f, indent=2)
 
     def dump_random_walks(self, file_name: str):
-        bin_funcs = [pair[0] for pair in self.matched_list]
-        bin_random_walks = [func.random_walk() for func in bin_funcs]
+        bin_random_walks = [func.random_walk(path_num=1) for func in self.bin_analyser.activated()]
         with open(os.path.join(self.base_dir, 'bin_random_walks', f'{file_name}.json'), 'w') as f:
             json.dump(bin_random_walks, f)
 
@@ -133,8 +123,8 @@ class Matcher():
             'mir_cfg': [(e[1], e[2]) for e in mir_func.edge_list],
             'bin_bbs': bin_func.bb_list,
             'mir_bbs': [bb.into_str() for bb in mir_func.bb_list],
-            'bin_strs': bin_func.string_refs,
-            'mir_strs': mir_func.get_all_strs()
+            # 'bin_strs': bin_func.string_refs,
+            # 'mir_strs': mir_func.get_all_strs()
         }
 
     @staticmethod
@@ -157,14 +147,3 @@ class Matcher():
             'bin_strs': bin_func.string_refs,
             'mir_strs': mir_func.get_all_strs()
         }
-
-
-CHECK_POINT = time.time()
-
-
-def check_time(s):
-    global CHECK_POINT
-    cur_time = time.time()
-    eclapse = cur_time - CHECK_POINT
-    CHECK_POINT = cur_time
-    print(f'{s} ({eclapse/60} min)')
