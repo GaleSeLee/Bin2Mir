@@ -334,6 +334,7 @@ class BinFunc(BaseFunc):
         self.bin_file_name = info_dict['identifier']
         self.addr_ranges = info_dict['addr_ranges']
         self.origin_decl = info_dict['function_name']
+        self.edge_list = []
         if '{closure}' in self.origin_decl:
             self.errno = FunctionAnalErrorCode.Closure
             return
@@ -357,13 +358,12 @@ class BinFunc(BaseFunc):
             self.errno = FunctionAnalErrorCode.NotSupportedFormat
 
     def analyse_bb_list(self, bb_list):
-        self.cfg_list = []
         for bb in bb_list:
             # temporally ignore indirect jump
             for tg in bb['goto']:
-                self.cfg_list.append((bb['id'], tg))
+                self.edge_list.append((bb['id'], tg))
             for ctg in bb['cond_goto']:
-                self.cfg_list.append((bb['id'], ctg))
+                self.edge_list.append((bb['id'], ctg))
         self.block_length_list = list(
             map(lambda x: x[1] + 1 - x[0], [bb['addr_range'] for bb in bb_list]))
 

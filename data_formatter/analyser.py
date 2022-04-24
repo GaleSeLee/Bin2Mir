@@ -11,27 +11,14 @@ class BaseAnalyser():
 
     def __init__(self, base_dir, crate_list, session) -> None:
         self.base_dir = base_dir
+        # Wanted crate
         self.crate_list = crate_list
         self.session = session
-        self.funcs = []
         self.crate_data = DefaultDict(self.load_data)
-
-    def activated(self):
-        return filter(lambda x: x.valid(), self.funcs)
-
-    def new_funcs(self):
-        return filter(lambda x: x.is_new, self.activated())
-
-    def db_funcs(self):
-        return filter(lambda x: not x.is_new, self.activated())
-
-    def partial_funcs(self):
-        return filter(lambda x: not x.full_info, self.activated())
 
     # Load funcs from db, without concrete info
     def load(self, **kwargs):
-        self.funcs.extend(self.session.query(
-            self.func_type).filter_by(**kwargs).all())
+        return self.session.query(self.func_type).filter_by(**kwargs).all()
 
     # Load concrete data from json for db functions
     def load_data(self, crate):
@@ -48,12 +35,13 @@ class BaseAnalyser():
         func.full_info = True
 
     # Analyse from raw inputs
-    def load_raw(self):
+    # Return a list of funcs, maybe invalid
+    def load_raw(self) -> list:
         raise NotImplementedError
 
-    # Save funcs to db, and concrete info to json
-    def save(self):
-        for func in self.new_funcs():
+    # Save valid funcs to db, and concrete info to json
+    def save(self, funcs):
+        for func in filter(lambda x: x.valid(), funcs):
             if self.session.query(self.func_type).filter_by(identifier=func.identifier).first() is not None:
                 continue
             self.crate_data[func.get_data_crate(
@@ -104,7 +92,7 @@ class BinaryAnalyser(BaseAnalyser):
         self.load_bin(os.path.join(self.base_dir, 'bin'), funcs)
         if statistic_file:
             self.dump_statistic(funcs, statistic_file)
-        self.funcs.extend(filter(lambda x: x.valid(), funcs))
+        return funcs
         # self.load_string_info(os.path.join(self.base_dir, 'strings.json'))
 
     def load_cfg_info(self, path, target_crate):
@@ -112,7 +100,11 @@ class BinaryAnalyser(BaseAnalyser):
             cfg_info = json.load(f)
         funcs = [BinFunc(target_crate, info_dict)
                  for info_dict in cfg_info]
-        for func in filter(lambda x: x.valid(), funcs):
+        for func in filter(lambda x: x.valid() and
+                           not self.session.query(BinFunc)
+                           .filter_by(identifier=x.identifier).first() is None, funcs):
+            func.is_new = False
+        for func in filter(lambda x: x.valid() and x.is_new, funcs):
             if sum(func.block_length_list) < 10:
                 func.errno |= FunctionAnalErrorCode.BinFileError
             if func.crate not in self.crate_list:
@@ -144,8 +136,7 @@ class BinaryAnalyser(BaseAnalyser):
                        [key if k in value else None for key, value in string_refs.items()]))
 
     def load_matched(self, **kwargs):
-        self.funcs.extend(self.session.query(BinFunc).filter(
-            BinFunc.match_mir != '').filter_by(**kwargs).all())
+        return self.session.query(BinFunc).filter(BinFunc.match_mir != '').filter_by(**kwargs).all() 
 
 
 class MirAnalyser(BaseAnalyser):
@@ -159,7 +150,7 @@ class MirAnalyser(BaseAnalyser):
                        [self.load_mir_info(crate) for crate in self.crate_list])
         if statistic_file:
             self.dump_statistic(funcs, statistic_file)
-        self.funcs.extend(filter(lambda x: x.valid() and x.is_new, funcs))
+        return funcs
 
     # Ignore functions already find in db
     def load_mir_info(self, crate):
