@@ -4,15 +4,16 @@ import json
 
 from data_formatter.macro import FunctionAnalErrorCode
 from data_formatter.func import BinFunc, MirFunc
-from data_formatter.utils import DefaultDict
+from data_formatter.utils import DefaultDict, statistic_dict
 
 
 class BaseAnalyser():
 
-    def __init__(self, base_dir, crate_list, session) -> None:
-        self.base_dir = base_dir
-        # Wanted crate
+    def __init__(self, raw_dir, formatted_dir, crate_list, session) -> None:
+        # Wanted lib crates, such as std, core
         self.crate_list = crate_list
+        self.raw_dir = raw_dir
+        self.formatted_dir = formatted_dir
         self.session = session
         self.crate_data = DefaultDict(self.load_data)
 
@@ -22,7 +23,8 @@ class BaseAnalyser():
 
     # Load concrete data from json for db functions
     def load_data(self, crate):
-        file_path = os.path.join(self.base_dir, 'func_data', f'{crate}.json')
+        file_path = os.path.join(
+            self.formatted_dir, 'func_data', f'{crate}.json')
         if not os.path.exists(file_path):
             return {}
         with open(file_path) as f:
@@ -36,26 +38,31 @@ class BaseAnalyser():
 
     # Analyse from raw inputs
     # Return a list of funcs, maybe invalid
-    def load_raw(self) -> list:
+    # For mir, target_crate is only used for 
+    #   statistic output
+    def load_raw(self, target_crate) -> list:
         raise NotImplementedError
 
     # Save valid funcs to db, and concrete info to json
     def save(self, funcs):
-        for func in filter(lambda x: x.valid(), funcs):
-            if self.session.query(self.func_type).filter_by(identifier=func.identifier).first() is not None:
-                continue
+        for func in filter(lambda x: x.valid() and x.is_new, funcs):
             self.crate_data[func.get_data_crate(
             )][func.identifier] = func.into_dict()
-            self.session.add(func)
+            self.save_func(func)
             func.is_new = False
-        data_path = os.path.join(self.base_dir, 'func_data')
-        # for crate in self.crate_list:
+        data_path = os.path.join(self.formatted_dir, 'func_data')
         for crate in self.crate_data:
             with open(os.path.join(data_path, f'{crate}.json'), 'w') as f:
                 json.dump(self.crate_data[crate], f)
         self.session.commit()
 
-    def dump_statistic(self, funcs, statistic_file):
+    def dump_statistic(self, funcs, file_name):
+        dump_path = os.path.join(
+            self.formatted_dir, 'statistic', f'{file_name}.json')
+        with open(dump_path, 'w') as f:
+            json.dump(self.get_statistic(funcs), f)
+
+    def get_statistic(self, funcs):
         def crate_cnt(crate_list: list):
             ret_dict = {}
             for crate in filter(lambda x: x is not None, crate_list):
@@ -73,30 +80,41 @@ class BaseAnalyser():
             'Valid function num': len(valid_funcs),
             'Function num for each crate': {crate: f'{valid_crate_cnt.get(crate, 0)}/{total_crate_cnt[crate]}' for crate in total_crate_cnt},
             # 'Function num for each invalid': {},
-            'Invalid list': [func.origin_decl for func in invalid_funcs]
+            'Invalid': statistic_dict([func.errno for func in invalid_funcs], [func.origin_decl for func in invalid_funcs])
         }
-        with open(statistic_file, 'w') as f:
-            json.dump(dump_dict, f)
+        return dump_dict
+
+    def save_func(self, func):
+        # Duplicate MIR Function, like
+        #   <T as std::array::SpecArrayClone>::clone::<N>
+        #   impl std::iter::adapters::fuse::FuseImpl<I>
+        #       for std::iter::Fuse<I> next
+        # No idea why there are different function with same
+        #   Name, just ignore them by now
+        if self.session.query(self.func_type).filter_by(identifier=func.identifier).first() is not None:
+            self.session.query(self.func_type).filter_by(
+                identifier=func.identifier).update({'duplicate_def': True})
+        else:
+            self.session.add(func)
 
 
 class BinaryAnalyser(BaseAnalyser):
 
-    def __init__(self, base_dir, crate_list, session) -> None:
-        super().__init__(base_dir, crate_list, session)
+    def __init__(self, raw_dir, formatted_dir, crate_list, session) -> None:
+        super().__init__(raw_dir, formatted_dir, crate_list, session)
         self.func_type = BinFunc
 
     # target crate: the crate which bin file belongs to
-    def load_raw(self, target_crate, statistic_file=''):
-        funcs = self.load_cfg_info(os.path.join(
-            self.base_dir, 'cfgs.json'), target_crate)
-        self.load_bin(os.path.join(self.base_dir, 'bin'), funcs)
-        if statistic_file:
-            self.dump_statistic(funcs, statistic_file)
+    def load_raw(self, target_crate):
+        funcs = self.load_cfg_info(target_crate)
+        self.load_bin(funcs, target_crate)
+        self.dump_statistic(funcs, f'{target_crate}_bin_info')
         return funcs
         # self.load_string_info(os.path.join(self.base_dir, 'strings.json'))
 
-    def load_cfg_info(self, path, target_crate):
-        with open(path) as f:
+    def load_cfg_info(self, target_crate):
+        file_path = os.path.join(self.raw_dir, target_crate, 'cfg.json')
+        with open(file_path) as f:
             cfg_info = json.load(f)
         funcs = [BinFunc(target_crate, info_dict)
                  for info_dict in cfg_info]
@@ -111,9 +129,10 @@ class BinaryAnalyser(BaseAnalyser):
                 func.errno |= FunctionAnalErrorCode.NotWantedCrate
         return funcs
 
-    def load_bin(self, base_dir, funcs):
+    def load_bin(self, funcs, target_crate):
+        bin_dir = os.path.join(self.raw_dir, target_crate, 'bin')
         for func in filter(lambda x: x.valid(), funcs):
-            func.load_bin(base_dir)
+            func.load_bin(bin_dir)
 
     def load_string_info(self, path):
         raise NotImplementedError
@@ -136,30 +155,28 @@ class BinaryAnalyser(BaseAnalyser):
                        [key if k in value else None for key, value in string_refs.items()]))
 
     def load_matched(self, **kwargs):
-        return self.session.query(BinFunc).filter(BinFunc.match_mir != '').filter_by(**kwargs).all() 
+        return self.session.query(BinFunc).filter(BinFunc.match_mir != '').filter_by(**kwargs).all()
 
 
 class MirAnalyser(BaseAnalyser):
 
-    def __init__(self, base_dir, crate_list, session) -> None:
-        super().__init__(base_dir, crate_list, session)
+    def __init__(self, raw_dir, formatted_dir, crate_list, session) -> None:
+        super().__init__(raw_dir, formatted_dir, crate_list, session)
         self.func_type = MirFunc
 
-    def load_raw(self, statistic_file=''):
+    def load_raw(self, target_crate):
         funcs = reduce(lambda x, y: x + y,
-                       [self.load_mir_info(crate) for crate in self.crate_list])
-        if statistic_file:
-            self.dump_statistic(funcs, statistic_file)
+                       [self.load_mir_info(crate, target_crate) for crate in self.crate_list])
+        self.dump_statistic(funcs, f'{target_crate}_mir_info')
         return funcs
 
     # Ignore functions already find in db
-    def load_mir_info(self, crate):
-        crate_json = os.path.join(self.base_dir, f'{crate}.json')
+    def load_mir_info(self, crate, target_crate):
+        crate_json = os.path.join(self.raw_dir, target_crate, f'{crate}.json')
         if not os.path.exists(crate_json):
-            print(f'File {crate_json} not exists')
-            return
-        with open(crate_json) as f:
-            crate_info = json.load(f)
+            # print(f'File {crate_json} not exists')
+            return []
+        crate_info = self.format_raw_json(crate_json)
         funcs = [MirFunc(
             crate=crate,
             fndef_info=item[0],
@@ -173,3 +190,31 @@ class MirAnalyser(BaseAnalyser):
         for func in filter(lambda x: x.valid() and x.is_new, funcs):
             func.analyse_bb_list()
         return funcs
+
+    def get_statistic(self, funcs):
+        dump_dict = super().get_statistic(funcs)
+        dump_dict['new_funcs_num'] = sum(
+            [1 if func.is_new and func.valid() else 0 for func in funcs])
+        dup_def_list = [func.into_str() for func in self.session.query(MirFunc).filter_by(duplicate_def=True).all()]
+        dump_dict['dup_def_num'] = len(dup_def_list) 
+        dump_dict['dup_def_list'] = dup_def_list
+        return dump_dict
+
+    # There is something wrong with the raw_extractor,
+    #   the output is always "padded" with some kind of
+    #   truncated info, and is not indented.
+    # Before the problem is handled, use this function
+    #   to re_format raw json output
+    @staticmethod
+    def format_raw_json(file_path):
+        with open(file_path) as f:
+            raw_content = f.read()
+            try:
+                info_dict = json.loads(raw_content)
+            except Exception as e:
+                error_str = str(e)
+                info_dict = json.loads(
+                    raw_content[: int(error_str[error_str.find('(char ') + 6: -1])])
+        with open(file_path, 'w') as f:
+            json.dump(info_dict, f, indent=2)
+        return info_dict

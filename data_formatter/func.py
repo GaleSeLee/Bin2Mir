@@ -7,7 +7,7 @@ from hashlib import sha1
 from pwn import disasm
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import (
-    Column, Integer,
+    Column, Integer, Boolean,
     String, ForeignKey
 )
 from sqlalchemy import orm
@@ -204,6 +204,7 @@ class MirFunc(BaseFunc):
     }
     identifier = Column(String(63), ForeignKey(
         'function.identifier'), primary_key=True)
+    duplicate_def = Column(Boolean, default=False)
 
     def __init__(self, crate, fndef_info, bb_list):
         super().__init__()
@@ -222,7 +223,7 @@ class MirFunc(BaseFunc):
             cur_bra, cur_ket = fndef_info.find('{'), fndef_info.find('}')
             if fndef_info[cur_bra + 1:].find('{') != -1 or fndef_info[cur_ket + 1:].find('}') != -1:
                 self.errno = FunctionAnalErrorCode.NotSupportedFormat
-                print(fndef_info)
+                # print(fndef_info)
         if self.valid():
             # self.analyse_signature(fndef_info[:cur_bra].strip())
             self.analyse_decl(fndef_info[cur_bra + 1: cur_ket])
