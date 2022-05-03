@@ -3,15 +3,20 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.autograd import Variable
 
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
 class Bin2MirModel(nn.Module):
 
     def __init__(self, cnn_params, bin_gnn_params,
-                 mir_gnn_params, rnn_params):
+                 mir_gnn_params, rnn_params, hbmp_params, cbow_params):
         super().__init__()
         self.dpcnn = DPCNN(**cnn_params)
         self.lstm = nn.LSTM(**rnn_params)
         self.mir_gnn = GGNN(**mir_gnn_params)
         self.bin_gnn = GGNN(**bin_gnn_params)
+        self.hbmp = HBMP(**hbmp_params)
+        self.cbow = CBOW(**cbow_params)
         self.bn = nn.BatchNorm1d(mir_gnn_params['output_dim'], affine=False)
 
     def forward(self, bin_bbs_embeddings_list, bin_A_list, mir_bbs_onehots_list, mir_A_list):
@@ -33,62 +38,42 @@ class Bin2MirModel(nn.Module):
             self.bn(torch.stack(bin_cfg_embedding_list)), p=2, dim=-1)
         return normalized_bin_embeddings, normalized_mir_embeddings
 
-class HBMP(nn.Module):
-    """
-    Hierarchical Bi-LSTM Max Pooling Encoder
-    """
-    def __init__(self, config):
-        super(HBMP, self).__init__()
-        self.config = config
-        self.max_pool = nn.AdaptiveMaxPool1d(1)
-        self.cells = config.cells
-        self.hidden_dim = config.hidden_dim
-        self.rnn1 = nn.LSTM(input_size=config.embed_dim,
-                            hidden_size=config.hidden_dim,
-                            num_layers=config.layers,
-                            dropout=config.dropout,
-                            bidirectional=True)
-        self.rnn2 = nn.LSTM(input_size=config.embed_dim,
-                            hidden_size=config.hidden_dim,
-                            num_layers=config.layers,
-                            dropout=config.dropout,
-                            bidirectional=True)
-        self.rnn3 = nn.LSTM(input_size=config.embed_dim,
-                            hidden_size=config.hidden_dim,
-                            num_layers=config.layers,
-                            dropout=config.dropout,
-                            bidirectional=True)
 
+# Hierarchical Bi-LSTM Max Pooling Encoder
+class HBMP(nn.Module):
+
+    def __init__(self, cells, hidden_dim, lstm_conf):
+        super(HBMP, self).__init__()
+        self.cells = cells
+        self.hidden_dim = hidden_dim
+        self.max_pool = nn.AdaptiveMaxPool1d(1)
+        self.rnn1 = nn.LSTM(hidden_size=hidden_dim, **lstm_conf)
+        self.rnn2 = nn.LSTM(hidden_size=hidden_dim, **lstm_conf)
+        self.rnn3 = nn.LSTM(hidden_size=hidden_dim, **lstm_conf)
 
     def forward(self, inputs):
         batch_size = inputs.size()[1]
-        h_0 = c_0 = Variable(inputs.data.new(self.config.cells,
+        h_0 = c_0 = Variable(inputs.data.new(self.cells,
                                              batch_size,
-                                             self.config.hidden_dim).zero_())
+                                             self.hidden_dim).zero_())
         out1, (ht1, ct1) = self.rnn1(inputs, (h_0, c_0))
         emb1 = self.max_pool(out1.permute(1,2,0)).permute(2,0,1)
-
         out2, (ht2, ct2) = self.rnn2(inputs, (ht1, ct1))
         emb2 = self.max_pool(out2.permute(1,2,0)).permute(2,0,1)
-
-        out3, (ht3, ct3) = self.rnn3(inputs, (ht2, ct2))
+        out3, (_, _) = self.rnn3(inputs, (ht2, ct2))
         emb3 = self.max_pool(out3.permute(1,2,0)).permute(2,0,1)
-
         emb = torch.cat([emb1, emb2, emb3], 2)
         emb = emb.squeeze(0)
-
         return emb
 
+    
+# Gated Propogator for GGNN
+# Using LSTM gating mechanism
 class Propogator(nn.Module):
-    """
-    Gated Propogator for GGNN
-    Using LSTM gating mechanism
-    """
+
     def __init__(self, state_dim, n_node):
         super(Propogator, self).__init__()
-
         self.n_node = n_node
-
         self.reset_gate = nn.Sequential(
             nn.Linear(state_dim*3, state_dim),
             nn.Sigmoid()
@@ -227,3 +212,34 @@ class DPCNN(BasicModule):
         x = x + px
 
         return x
+
+class CBOW(nn.Module):
+
+    # context_size: one side
+    def __init__(self, vocab_size, embedding_dim=64, context_size=2):
+        super(CBOW, self).__init__()
+        self.embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.linear1 = nn.Linear(2 * context_size * embedding_dim, 64)
+        self.linear2 = nn.Linear(64, vocab_size)
+
+    def forward(self, context):
+        embeds = self.embeddings(context).view((1, -1))
+        out = F.relu(self.linear1(embeds))
+        out = self.linear2(out)
+        log_probs = F.log_softmax(out, dim=1)
+        return log_probs
+
+    def batch_lookup(self, tensor_list):
+        tensor_list = [self.lookup(tensor) for tensor in tensor_list]
+        length = max([tensor.shape[0] for tensor in tensor_list])
+        return torch.stack([self._pad1d(tensor, length) for tensor in tensor_list])
+
+    def lookup(self, tensor):
+        if tensor is None:
+            return torch.zeros(1, self.embedding_dim).to(DEVICE)
+        return self.embeddings(tensor)
+
+    def _pad1d(self, tensor, target_length):
+        padding = torch.zeros(
+            target_length - tensor.shape[0], self.embedding_dim).to(DEVICE)
+        return torch.cat([tensor, padding])
