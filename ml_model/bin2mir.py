@@ -142,8 +142,7 @@ class Bin2Mir():
         bin_bbs_embeddings_list = [
             self.model.cbow.batch_lookup(self.asm_tokenizer(bin_bbs)) for bin_bbs in bin_bbs_list]
         mir_bbs_onehots_list = [
-            self.mir_encoder(mir_bbs).unsqueeze(1).to(DEVICE) for mir_bbs in mir_bbs_list]
-        raise ValueError
+            self.mir_encoder.samples2tensor(mir_bbs).unsqueeze(1).to(DEVICE) for mir_bbs in mir_bbs_list]
         bin_A_list = [edges2tensor(bin_edges, len(bin_bbs)).to(DEVICE)
                       for bin_edges, bin_bbs in zip(bin_edges_list, bin_bbs_list)]
         mir_A_list = [edges2tensor(mir_edges, len(mir_bbs)).to(DEVICE)

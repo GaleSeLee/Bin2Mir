@@ -138,29 +138,17 @@ class GGNN(nn.Module):
                 m.bias.data.fill_(0)
 
     def forward(self, prop_state, A):
-        for i_step in range(self.n_steps):
+        for _ in range(self.n_steps):
             in_state = self.in_fc(prop_state)
             out_state = self.out_fc(prop_state)
-
             prop_state = self.propogator(in_state, out_state, prop_state, A)
 
         output = self.out(prop_state)
 
         return output
 
-class BasicModule(nn.Module):
-    def __init__(self):
-        super(BasicModule, self).__init__()
-        self.model_name = str(type(self))
 
-    def load(self, path):
-        self.load_state_dict(torch.load(path))
-
-    def save(self, path):
-        torch.save(self.state_dict(), path)
-
-
-class DPCNN(BasicModule):
+class DPCNN(nn.Module):
     """
     DPCNN for sentences classification.
     """

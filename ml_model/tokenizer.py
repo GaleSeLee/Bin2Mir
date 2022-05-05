@@ -6,6 +6,7 @@ import json
 import torch
 
 
+
 class Tokenizer():
     def __init__(self, max_len=2048) -> None:
         self.max_len = max_len
@@ -29,13 +30,34 @@ class Tokenizer():
 
 
 class MirCharTokenizer(Tokenizer):
-    def __init__(self, max_len=2048) -> None:
+    def __init__(self, vocab_size=128, max_len=2048) -> None:
         super().__init__(max_len)
-        self.embedding_size = 128
+        self.embedding_size = vocab_size
         self.max_len = max_len
+        self.lookup = torch.eye(vocab_size)
 
-    def sample2labels(self, sample: str):
-        return [ord(c) for c in sample[:self.max_len]]
+    # Should gurantee that str is not ''
+    def sample2tensor(self, sample: str) -> torch.tensor:
+        if not sample:
+            return torch.zeros(self.embedding_size)
+        labels = [ord(c) for c in sample[:self.max_len]]
+        return torch.index_select(self.lookup, 0, torch.tensor(labels, dtype=torch.long))
+
+    def samples2tensor(self, samples: list) -> torch.tensor:
+        tensor_list = [self.sample2tensor(sample) for sample in samples]
+        max_len = max([tensor.shape[0] for tensor in tensor_list])
+        return torch.stack([self._pad2d(tensor, max_len) for tensor in tensor_list])
+
+    @staticmethod
+    def _pad2d(tensor, length):
+        target_length = 1
+        while target_length < length:
+            target_length *= 2
+        if tensor is None:
+            raise ValueError
+        padding = torch.zeros(
+            target_length - tensor.shape[0], tensor.shape[1])
+        return torch.cat([tensor, padding])
 
 
 class AsmTokenizer(Tokenizer):

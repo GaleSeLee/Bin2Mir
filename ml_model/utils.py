@@ -42,10 +42,16 @@ class DataLoader():
     def __len__(self):
         return len(self.label2identifier)
 
+    def get_mir_funcs(self):
+        pass
+
+    def get_bin_funcs(self):
+        pass
+
 
 def edges2tensor(cfg_list, max_idx):
     dims = (max_idx, max_idx)
     ret = torch.zeros(dims)
-    for s, t in cfg_list:
-        ret[t, s] = 1
+    for edge in cfg_list:
+        ret[edge[-2], edge[-1]] = 1
     return ret
