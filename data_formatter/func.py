@@ -251,7 +251,7 @@ class MirFunc(BaseFunc):
 
     def into_dict(self, all_info=False):
         ret = super().into_dict(all_info)
-        ret['bb_list'] = [bb.into_dict() for bb in self.bb_list]
+        ret['bb_list'] = [bb.into_str() for bb in self.bb_list]
         return ret
 
     def load_data(self, edge_list, bb_list):
