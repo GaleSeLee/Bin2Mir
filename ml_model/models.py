@@ -6,74 +6,102 @@ from torch.autograd import Variable
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
+
 class Bin2MirModel(nn.Module):
 
     def __init__(self, cnn_params, bin_gnn_params,
-                 mir_gnn_params, rnn_params, hbmp_params, cbow_params):
+                 mir_gnn_params, hbmp_params, cbow_params,
+                 with_vnode=True, with_normalize=True):
         super().__init__()
         self.dpcnn = DPCNN(**cnn_params)
-        self.lstm = nn.LSTM(**rnn_params)
         self.mir_gnn = GGNN(**mir_gnn_params)
         self.bin_gnn = GGNN(**bin_gnn_params)
         self.hbmp = HBMP(**hbmp_params)
         self.cbow = CBOW(**cbow_params)
         self.bn = nn.BatchNorm1d(mir_gnn_params['output_dim'], affine=False)
+        self.with_vnode = with_vnode
+        self.with_normalize = with_normalize
 
-    def forward(self, bin_bbs_embeddings_list, bin_A_list, mir_bbs_onehots_list, mir_A_list):
-        bin_bbs_embedding_list = [self.lstm(bin_bbs_embeddings)[0][:, -1:, ].squeeze(1)
+    def forward(self, bin_bbs_embeddings_list, bin_edges_list, mir_bbs_onehots_list, mir_edges_list):
+        with_vnode = self.with_vnode
+        bin_bbs_embedding_list = [self.hbmp(bin_bbs_embeddings)
                                   for bin_bbs_embeddings in bin_bbs_embeddings_list]
         mir_bbs_embedding_list = [self.dpcnn(mir_bbs_onehots)
                                   for mir_bbs_onehots in mir_bbs_onehots_list]
+        bin_A_list = [self.edges2tensor(bin_edges, len(bin_bbs_embedding), with_vnode)
+                      for bin_edges, bin_bbs_embedding in zip(bin_edges_list, bin_bbs_embedding_list)]
+        mir_A_list = [self.edges2tensor(mir_edges, len(mir_bbs_embedding), with_vnode)
+                      for mir_edges, mir_bbs_embedding in zip(mir_edges_list, mir_bbs_embedding_list)]
         bin_cfg_embedding_list = [
-            self.bin_gnn(bin_bbs_embedding, bin_A)[0]
+            self.bin_gnn(bin_bbs_embedding if not with_vnode else self.add_vnode(
+                bin_bbs_embedding), bin_A)[0]
             for bin_bbs_embedding, bin_A in zip(bin_bbs_embedding_list, bin_A_list)
         ]
         mir_cfg_embedding_list = [
-            self.mir_gnn(mir_bbs_embedding, mir_A)[0]
+            self.mir_gnn(mir_bbs_embedding if not with_vnode else self.add_vnode(
+                mir_bbs_embedding), mir_A)[0]
             for mir_bbs_embedding, mir_A in zip(mir_bbs_embedding_list, mir_A_list)
         ]
-        normalized_mir_embeddings = F.normalize(
-            self.bn(torch.stack(mir_cfg_embedding_list)), p=2, dim=-1)
-        normalized_bin_embeddings = F.normalize(
-            self.bn(torch.stack(bin_cfg_embedding_list)), p=2, dim=-1)
-        return normalized_bin_embeddings, normalized_mir_embeddings
+        mir_embeddings = torch.stack(mir_cfg_embedding_list)
+        bin_embeddings = torch.stack(bin_cfg_embedding_list)
+        if self.with_normalize:
+            return F.normalize(self.bn(bin_embeddings)), F.normalize(self.bn(mir_embeddings))
+        return bin_embeddings, mir_embeddings
+
+    @staticmethod
+    def add_vnode(nodes_embedding: torch.tensor) -> torch.tensor:
+        vnode = torch.zeros((1, nodes_embedding.shape[-1])).to(DEVICE)
+        return torch.cat([vnode, nodes_embedding])
+
+    @staticmethod
+    # params not take vnode into account
+    def edges2tensor(edge_list, max_idx, with_vnode=True):
+        offset = 1 if with_vnode else 0
+        dims = (max_idx + offset, max_idx + offset)
+        ret = torch.zeros(dims)
+        for edge in edge_list:
+            ret[edge[-2] + offset, edge[-1] + offset] = 1
+        if with_vnode:
+            ret[0, :], ret[:, 0] = 1, 1
+        return ret.to(DEVICE)
 
 
 # Hierarchical Bi-LSTM Max Pooling Encoder
 class HBMP(nn.Module):
 
-    def __init__(self, cells, hidden_dim, lstm_conf):
+    # hidden size if equal to 2 * output size
+    def __init__(self, **kwargs):
         super(HBMP, self).__init__()
-        self.cells = cells
-        self.hidden_dim = hidden_dim
+        self.cells = (2 if kwargs.get('bidirectional', False)
+                      else 1) * kwargs.get('num_layers', 1)
+        self.hidden_dim = kwargs.get('hidden_size', 16)
         self.max_pool = nn.AdaptiveMaxPool1d(1)
-        self.rnn1 = nn.LSTM(hidden_size=hidden_dim, **lstm_conf)
-        self.rnn2 = nn.LSTM(hidden_size=hidden_dim, **lstm_conf)
-        self.rnn3 = nn.LSTM(hidden_size=hidden_dim, **lstm_conf)
+        self.rnn1 = nn.LSTM(**kwargs)
+        self.rnn2 = nn.LSTM(**kwargs)
+        self.rnn3 = nn.LSTM(**kwargs)
 
     def forward(self, inputs):
-        batch_size = inputs.size()[1]
+        batch_size = inputs.size()[0]
         h_0 = c_0 = Variable(inputs.data.new(self.cells,
                                              batch_size,
                                              self.hidden_dim).zero_())
         out1, (ht1, ct1) = self.rnn1(inputs, (h_0, c_0))
-        emb1 = self.max_pool(out1.permute(1,2,0)).permute(2,0,1)
+        emb1 = self.max_pool(out1.permute(0, 2, 1)).permute(0, 2, 1)
         out2, (ht2, ct2) = self.rnn2(inputs, (ht1, ct1))
-        emb2 = self.max_pool(out2.permute(1,2,0)).permute(2,0,1)
+        emb2 = self.max_pool(out2.permute(0, 2, 1)).permute(0, 2, 1)
         out3, (_, _) = self.rnn3(inputs, (ht2, ct2))
-        emb3 = self.max_pool(out3.permute(1,2,0)).permute(2,0,1)
+        emb3 = self.max_pool(out3.permute(0, 2, 1)).permute(0, 2, 1)
         emb = torch.cat([emb1, emb2, emb3], 2)
-        emb = emb.squeeze(0)
+        emb = emb.squeeze(1)
         return emb
 
-    
+
 # Gated Propogator for GGNN
 # Using LSTM gating mechanism
 class Propogator(nn.Module):
 
-    def __init__(self, state_dim, n_node):
+    def __init__(self, state_dim):
         super(Propogator, self).__init__()
-        self.n_node = n_node
         self.reset_gate = nn.Sequential(
             nn.Linear(state_dim*3, state_dim),
             nn.Sigmoid()
@@ -109,18 +137,18 @@ class GGNN(nn.Module):
     Gated Graph Sequence Neural Networks (GGNN)
     Take one graph as input and generate nodes' embedding
     """
-    def __init__(self, state_dim, n_node, n_steps, output_dim):
+
+    def __init__(self, state_dim, n_steps, output_dim):
         super(GGNN, self).__init__()
 
         self.state_dim = state_dim
-        self.n_node = n_node
         self.n_steps = n_steps
 
         self.in_fc = nn.Linear(self.state_dim, self.state_dim)
         self.out_fc = nn.Linear(self.state_dim, self.state_dim)
 
         # Propogation Model
-        self.propogator = Propogator(self.state_dim, self.n_node)
+        self.propogator = Propogator(self.state_dim)
 
         # Output Model
         self.out = nn.Sequential(
@@ -200,6 +228,7 @@ class DPCNN(nn.Module):
         x = x + px
 
         return x
+
 
 class CBOW(nn.Module):
 

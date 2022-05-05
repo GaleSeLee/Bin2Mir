@@ -6,10 +6,7 @@ import torch.nn as nn
 
 from ml_model.models import Bin2MirModel, DEVICE
 from ml_model.tokenizer import AsmTokenizer, MirCharTokenizer
-from ml_model.utils import (
-    DataLoader,
-    edges2tensor,
-)
+from ml_model.utils import DataLoader
 
 
 class Bin2Mir():
@@ -23,38 +20,26 @@ class Bin2Mir():
         model_params = {
             'cnn_params': {
                 'channel_size': model_meta.get('TMP__CNN_CHANNEL_SIZE', 64),
-                'input_dim': model_meta.get('TMP__CNN_INPUT_DIN', 128),
-                'output_dim': model_meta.get('TMP__CNN_OUTPUT_DIM', 128),
-            },
-            'rnn_params': {
-                'input_size': model_meta.get('RNN_INPUT_DIM', 64),
-                'hidden_size': model_meta.get('RNN_HIDDEN_DIM', 64),
-                'num_layers': model_meta.get('RNN_LAYER', 2),
-                'batch_first': True,
-                'dropout': 0.2,
-                'bidirectional': True,
-            },
-            'mir_gnn_params': {
-                'state_dim': 128,
-                'n_node': 64,
-                'n_steps': 8,
-                'output_dim': 128,
-            },
-            'bin_gnn_params': {
-                'state_dim': 128,
-                'n_node': 64,
-                'n_steps': 8,
-                'output_dim': 128,
+                'input_dim': model_meta.get('TMP__CNN_INPUT_DIN', 96),
+                'output_dim': model_meta.get('TMP__CNN_OUTPUT_DIM', 96),
             },
             'hbmp_params': {
-                'cells': 2,
-                'hidden_dim': 64,
-                'lstm_conf': {
-                    'input_size': 64,
-                    'num_layers': 2,
-                    'dropout': 0.2,
-                    'bidirectional': True
-                }
+                'hidden_size': 16,
+                'batch_first': True,
+                'input_size': 64,
+                'num_layers': 2,
+                'dropout': 0.2,
+                'bidirectional': True
+            },
+            'mir_gnn_params': {
+                'state_dim': 96,
+                'n_steps': 4,
+                'output_dim': 96,
+            },
+            'bin_gnn_params': {
+                'state_dim': 96,
+                'n_steps': 4,
+                'output_dim': 96,
             },
             'cbow_params': {
                 'vocab_size': self.asm_tokenizer.token_dict.dim,
@@ -91,7 +76,8 @@ class Bin2Mir():
             total_loss, batch_cnt = 0.0, 0
             print(f"Epoch {epoch}:")
             for i, batch_content in enumerate(train_loader):
-                bin_func_embeddings, mir_func_embeddings, func_label_list = self.deal_batch(batch_content)
+                bin_func_embeddings, mir_func_embeddings, func_label_list = self.deal_batch(
+                    batch_content)
                 neg_samples = self.norm_weighted_samples(
                     bin_func_embeddings, mir_func_embeddings, func_label_list)
                 loss = criterion(
@@ -143,13 +129,13 @@ class Bin2Mir():
             self.model.cbow.batch_lookup(self.asm_tokenizer(bin_bbs)) for bin_bbs in bin_bbs_list]
         mir_bbs_onehots_list = [
             self.mir_encoder.samples2tensor(mir_bbs).unsqueeze(1).to(DEVICE) for mir_bbs in mir_bbs_list]
-        bin_A_list = [edges2tensor(bin_edges, len(bin_bbs)).to(DEVICE)
-                      for bin_edges, bin_bbs in zip(bin_edges_list, bin_bbs_list)]
-        mir_A_list = [edges2tensor(mir_edges, len(mir_bbs)).to(DEVICE)
-                      for mir_edges, mir_bbs in zip(mir_edges_list, mir_bbs_list)]
         bin_func_embeddings, mir_func_embeddings = self.model(
-            bin_bbs_embeddings_list, bin_A_list, mir_bbs_onehots_list, mir_A_list)
+            bin_bbs_embeddings_list, bin_edges_list, mir_bbs_onehots_list, mir_edges_list)
         return bin_func_embeddings, mir_func_embeddings, func_label_list
+
+    @staticmethod
+    def add_vnode(nodes_embedding: torch.tensor) -> torch.tensor:
+        vnode = torch.zeros(nodes_embedding.shape)
 
     @staticmethod
     def retrieve(bin_embedding, mir_embeddings):

@@ -6,7 +6,6 @@ import json
 import torch
 
 
-
 class Tokenizer():
     def __init__(self, max_len=2048) -> None:
         self.max_len = max_len
@@ -30,7 +29,7 @@ class Tokenizer():
 
 
 class MirCharTokenizer(Tokenizer):
-    def __init__(self, vocab_size=128, max_len=2048) -> None:
+    def __init__(self, vocab_size=96, max_len=2048) -> None:
         super().__init__(max_len)
         self.embedding_size = vocab_size
         self.max_len = max_len
@@ -40,7 +39,8 @@ class MirCharTokenizer(Tokenizer):
     def sample2tensor(self, sample: str) -> torch.tensor:
         if not sample:
             return torch.zeros(self.embedding_size)
-        labels = [ord(c) for c in sample[:self.max_len]]
+        labels = [ord(c) - 32 if 32 <= ord(c) <
+                  128 else 0 for c in sample[:self.max_len]]
         return torch.index_select(self.lookup, 0, torch.tensor(labels, dtype=torch.long))
 
     def samples2tensor(self, samples: list) -> torch.tensor:

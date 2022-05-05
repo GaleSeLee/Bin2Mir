@@ -1,10 +1,5 @@
-from functools import reduce
-import os
-from collections import defaultdict
-
 import json
-from random import choice, random
-import torch
+from random import choice
 
 
 class DataLoader():
@@ -15,7 +10,8 @@ class DataLoader():
         self.mir2bin = pair_info['mir2bin']
         self.mir_info = pair_info['mir_funcs']
         self.bin_info = pair_info['bin_funcs']
-        self.label2identifier = {i: k for i, k in enumerate(self.mir2bin.keys())}
+        self.label2identifier = {i: k for i,
+                                 k in enumerate(self.mir2bin.keys())}
 
     @staticmethod
     def batch_collector(batch):
@@ -47,11 +43,3 @@ class DataLoader():
 
     def get_bin_funcs(self):
         pass
-
-
-def edges2tensor(cfg_list, max_idx):
-    dims = (max_idx, max_idx)
-    ret = torch.zeros(dims)
-    for edge in cfg_list:
-        ret[edge[-2], edge[-1]] = 1
-    return ret
