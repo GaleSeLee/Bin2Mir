@@ -18,6 +18,7 @@ class Bin2Mir():
         self.base_dir = ml_dir
         self.asm_tokenizer = AsmTokenizer()
         self.asm_tokenizer.load_dict(os.path.join(self.base_dir, 'models'))
+        self.asm_tokenizer.fix_vocab()
         self.mir_encoder = MirCharTokenizer()
         model_params = {
             'cnn_params': {
@@ -61,6 +62,7 @@ class Bin2Mir():
             }
         }
         self.model = Bin2MirModel(**model_params)
+        self.model.to(DEVICE)
 
     def load_model(self, model_dir):
         self.model.load_state_dict(torch.load(
@@ -72,7 +74,6 @@ class Bin2Mir():
 
     def train(self, file_path, train_meta={}):
 
-        self.model.to(DEVICE)
         train_loader = torch.utils.data.DataLoader(
             dataset=DataLoader(file_path),
             batch_size=train_meta.get('BATCH_SIZE', 64),
@@ -107,8 +108,8 @@ class Bin2Mir():
                     print(f'Step {i+1}, loss: {loss.item()}')
             print(f'Average loss {total_loss/batch_cnt}')
 
-    def test(self, data_dir, verbose=False):
-        self.model.to(DEVICE)
+    def test(self, file_path, test_meta, verbose=False):
+        raise NotImplementedError
         inner_loader = DataLoader(data_dir)
         test_loader = torch.utils.data.DataLoader(
             dataset=inner_loader,
@@ -138,12 +139,11 @@ class Bin2Mir():
 
     def deal_batch(self, batch_content):
         bin_bbs_list, bin_edges_list, mir_bbs_list, mir_edges_list, func_label_list = batch_content
-        raise ValueError
         bin_bbs_embeddings_list = [
-            self.asm2vec(self.asm2vec.to_labels(bin_bbs, ukw=True)).to(DEVICE)
-            for bin_bbs in bin_bbs_list]
+            self.model.cbow.batch_lookup(self.asm_tokenizer(bin_bbs)) for bin_bbs in bin_bbs_list]
         mir_bbs_onehots_list = [
-            self.mir2vec(mir_bbs).unsqueeze(1).to(DEVICE) for mir_bbs in mir_bbs_list]
+            self.mir_encoder(mir_bbs).unsqueeze(1).to(DEVICE) for mir_bbs in mir_bbs_list]
+        raise ValueError
         bin_A_list = [edges2tensor(bin_edges, len(bin_bbs)).to(DEVICE)
                       for bin_edges, bin_bbs in zip(bin_edges_list, bin_bbs_list)]
         mir_A_list = [edges2tensor(mir_edges, len(mir_bbs)).to(DEVICE)

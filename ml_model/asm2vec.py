@@ -85,9 +85,7 @@ class Asm2Vec():
         self.encoder.save_dict(model_dir)
 
     def load_train_data(self, data_dir):
-        all_samples = []
         for json_file in filter(lambda x: x.endswith('random_walk.json'), os.listdir(data_dir)):
             with open(os.path.join(data_dir, json_file)) as f:
                 samples = json.load(f)
-            all_samples += [sample.split('\n') for sample in samples]
-        self.train_samples = self.encoder(all_samples)
+        self.train_samples = self.encoder(samples)

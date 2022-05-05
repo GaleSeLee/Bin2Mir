@@ -41,28 +41,22 @@ class MirCharTokenizer(Tokenizer):
 class AsmTokenizer(Tokenizer):
     def __init__(self, max_len=4096) -> None:
         super().__init__(max_len)
-        # 0 for train, 1 for test
-        self.mode = 0
         self.token_dict = TokenDict()
 
     # If new_token is set True, create new label, otherwise,
     #   threat all unknown token as 'ukw'
-    def train_mode(self):
-        self.mode = 0
-        self.token_dict.new_token = True
-
-    def test_mode(self):
-        self.mode = 1
+    def fix_vocab(self):
         self.token_dict.new_token = False
 
-    # Each sample is a list of instrustion, like
-    #   ["push rbp", "mov rbp,rsp", ...
+    # Each sample is like
+    #   "push rbp\nmov rbp,rsp\n ..."
     # In seperate mode, return will be list of labels,
     #   each element corresponds to a sample, like:
     #   [1, 2, 3, 2, 4, ...
-    def sample2labels(self, sample: list) -> list:
+    def sample2labels(self, sample: str) -> list:
+        sample = sample.split('\n')[:self.max_len]
         return reduce(lambda x, y: x + y,
-                      [self.instruction2labels(instruction) for instruction in sample[:self.max_len]])
+                      [self.instruction2labels(instruction) for instruction in sample])
 
     def instruction2labels(self, instruction: str) -> list:
         tokens = instruction.split()

@@ -232,14 +232,14 @@ class CBOW(nn.Module):
     def batch_lookup(self, tensor_list):
         tensor_list = [self.lookup(tensor) for tensor in tensor_list]
         length = max([tensor.shape[0] for tensor in tensor_list])
-        return torch.stack([self._pad1d(tensor, length) for tensor in tensor_list])
+        return torch.stack([self._pad2d(tensor, length) for tensor in tensor_list])
 
     def lookup(self, tensor):
         if tensor is None:
             return torch.zeros(1, self.embedding_dim).to(DEVICE)
-        return self.embeddings(tensor)
+        return self.embeddings(tensor.to(DEVICE))
 
-    def _pad1d(self, tensor, target_length):
+    def _pad2d(self, tensor, target_length):
         padding = torch.zeros(
-            target_length - tensor.shape[0], self.embedding_dim).to(DEVICE)
+            target_length - tensor.shape[0], tensor.shape[1]).to(DEVICE)
         return torch.cat([tensor, padding])
