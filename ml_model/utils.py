@@ -4,7 +4,7 @@ from random import choice
 
 class DataLoader():
 
-    def __init__(self, file_path):
+    def __init__(self, file_path, bin_bb_limit=50, mir_bb_limit=100):
         with open(file_path) as f:
             pair_info = json.load(f)
         self.mir2bin = pair_info['mir2bin']
@@ -12,6 +12,8 @@ class DataLoader():
         self.bin_info = pair_info['bin_funcs']
         self.label2identifier = {i: k for i,
                                  k in enumerate(self.mir2bin.keys())}
+        self.limit_length(self.mir_info, mir_bb_limit)
+        self.limit_length(self.bin_info, bin_bb_limit)
 
     @staticmethod
     def batch_collector(batch):
@@ -38,8 +40,21 @@ class DataLoader():
     def __len__(self):
         return len(self.label2identifier)
 
-    def get_mir_funcs(self):
-        pass
-
     def get_bin_funcs(self):
-        pass
+
+        ret = {}
+        for k, v in self.mir2bin.items():
+            bin_funcs = [self.bin_info[identifier] for identifier in v]
+            bin_bb = [func['bb_list'] for func in bin_funcs]
+            bin_cfg = [func['edge_list'] for func in bin_funcs]
+            ret[k] = bin_bb, bin_cfg
+        return ret
+
+    @staticmethod
+    def limit_length(d, limit):
+        for k in d.keys():
+            d[k]['bb_list'] = d[k]['bb_list'][:limit]
+            d[k]['edge_list'] = list(filter(
+                lambda x: x[-1] < limit and x[-2] < limit,
+                d[k]['edge_list']))
+        

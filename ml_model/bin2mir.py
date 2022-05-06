@@ -1,5 +1,4 @@
 import os
-from functools import reduce
 
 import torch
 import torch.nn as nn
@@ -11,56 +10,79 @@ from ml_model.utils import DataLoader
 
 class Bin2Mir():
 
-    def __init__(self, ml_dir, model_meta={}):
+    def __init__(self, ml_dir, asm_embedding_dim=64, mir_cnn_chan=96,
+                 lstm_hidden_dim=64, lstm_layer=1, propo_steps=3,
+                 final_embedding_dim=96):
         self.base_dir = ml_dir
         self.asm_tokenizer = AsmTokenizer()
         self.asm_tokenizer.load_dict(os.path.join(self.base_dir, 'models'))
         self.asm_tokenizer.fix_vocab()
         self.mir_encoder = MirCharTokenizer()
         model_params = {
+            'with_normalize': False,
             'cnn_params': {
-                'channel_size': model_meta.get('TMP__CNN_CHANNEL_SIZE', 64),
-                'input_dim': model_meta.get('TMP__CNN_INPUT_DIN', 96),
-                'output_dim': model_meta.get('TMP__CNN_OUTPUT_DIM', 96),
+                'channel_size': mir_cnn_chan,
+                'input_dim': 96,  # printable ascii
+                'output_dim': final_embedding_dim,
             },
             'hbmp_params': {
-                'hidden_size': 16,
+                'out_dim': final_embedding_dim,
+                'hidden_size': lstm_hidden_dim,
                 'batch_first': True,
-                'input_size': 64,
-                'num_layers': 2,
-                'dropout': 0.2,
+                'input_size': asm_embedding_dim,
+                'num_layers': lstm_layer,
+                # 'dropout': 0.2,
                 'bidirectional': True
             },
             'mir_gnn_params': {
-                'state_dim': 96,
-                'n_steps': 4,
-                'output_dim': 96,
+                'state_dim': final_embedding_dim,
+                'n_steps': propo_steps,
+                'output_dim': final_embedding_dim,
             },
             'bin_gnn_params': {
-                'state_dim': 96,
-                'n_steps': 4,
-                'output_dim': 96,
+                'state_dim': final_embedding_dim,
+                'n_steps': propo_steps,
+                'output_dim': final_embedding_dim,
             },
             'cbow_params': {
                 'vocab_size': self.asm_tokenizer.token_dict.dim,
-                'embedding_dim': model_meta.get('ASM_EMBEDDING_SIZE', 64),
+                'embedding_dim': asm_embedding_dim,
             }
         }
         self.model = Bin2MirModel(**model_params)
+        self.model.cbow.load_state_dict(torch.load(
+            os.path.join(self.base_dir, 'models', 'asm_cbow_model.ckpt')))
         self.model.to(DEVICE)
 
-    def load_model(self, model_dir):
+    def load_model(self, model_dir=''):
+        if not model_dir:
+            model_dir = os.path.join(self.base_dir, 'models')
         self.model.load_state_dict(torch.load(
             os.path.join(model_dir, "bin2mir.ckpt")))
 
-    def save_model(self, model_dir):
+    def save_model(self, model_dir=''):
+        if not model_dir:
+            model_dir = os.path.join(self.base_dir, 'models')
         torch.save(self.model.state_dict(),
                    os.path.join(model_dir, 'bin2mir.ckpt'))
 
+    def save_mir_embeddings(self, d, embedding_dir=''):
+        if not embedding_dir:
+            embedding_dir = os.path.join(self.base_dir, 'db')
+        embedding_db_path = os.path.join(embedding_dir, 'mir_funcs.ckpt')
+        torch.save(d, embedding_db_path)
+
+    def load_mir_embeddings(self, embedding_dir=''):
+        if not embedding_dir:
+            embedding_dir = os.path.join(self.base_dir, 'db')
+        embedding_db_path = os.path.join(embedding_dir, 'mir_funcs.ckpt')
+        return torch.load(embedding_db_path)
+
     def train(self, file_path, train_meta={}):
 
+        inner_loader = DataLoader(file_path)
         train_loader = torch.utils.data.DataLoader(
-            dataset=DataLoader(file_path),
+            dataset=inner_loader,
             batch_size=train_meta.get('BATCH_SIZE', 64),
             shuffle=True,
             collate_fn=DataLoader.batch_collector)
@@ -75,11 +97,11 @@ class Bin2Mir():
         for epoch in range(train_meta.get('EPOCH', 64)):
             total_loss, batch_cnt = 0.0, 0
             print(f"Epoch {epoch}:")
-            for i, batch_content in enumerate(train_loader):
-                bin_func_embeddings, mir_func_embeddings, func_label_list = self.deal_batch(
+            for batch_content in train_loader:
+                bin_func_embeddings, mir_func_embeddings, _ = self.deal_batch(
                     batch_content)
                 neg_samples = self.norm_weighted_samples(
-                    bin_func_embeddings, mir_func_embeddings, func_label_list)
+                    bin_func_embeddings, mir_func_embeddings)
                 loss = criterion(
                     bin_func_embeddings,
                     mir_func_embeddings,
@@ -90,38 +112,40 @@ class Bin2Mir():
                 optimizer.zero_grad()
                 total_loss += loss.item()
                 batch_cnt += 1
-                if i % 100 == 99:
-                    print(f'Step {i+1}, loss: {loss.item()}')
             print(f'Average loss {total_loss/batch_cnt}')
 
-    def test(self, file_path, test_meta, verbose=False):
-        raise NotImplementedError
-        inner_loader = DataLoader(data_dir)
-        test_loader = torch.utils.data.DataLoader(
-            dataset=inner_loader,
-            batch_size=64,
-            collate_fn=DataLoader.batch_collector)
+        d = {}
         with torch.no_grad():
-            outputs = [self.deal_batch(batch_content)
-                       for batch_content in test_loader]
-            bin_func_embeddings = torch.cat([x[0] for x in outputs])
-            mir_func_embeddings = torch.cat([x[1] for x in outputs])
-            labels = reduce(lambda x, y: x + y, [x[2] for x in outputs])
-            predict_labels = [labels[self.retrieve(bin_func_embedding, mir_func_embeddings)]
-                              for bin_func_embedding in bin_func_embeddings]
-        correctness = sum([1 if label == predict else 0 for label, predict in zip(
-            labels, predict_labels)])/len(labels)
-        print(f'Correctness: {100 * correctness}%')
-        if verbose:
-            idx2fnname = {v: k for k, v in inner_loader.fn2label.items()}
-            for i in range(len(bin_func_embeddings)):
-                bin_f = bin_func_embeddings[i]
-                label, pre = labels[i], predict_labels[i]
-                min_dis, ref_dis = self.verbose_retrive(
-                    bin_f, mir_func_embeddings, i)
-                func_name, pre_name = idx2fnname[label], idx2fnname[pre]
-                print(
-                    f'Ref: {ref_dis}({func_name}), Pre: {min_dis}({pre_name})')
+            for batch_content in train_loader:
+                _, mir_func_embeddings, labels = self.deal_batch(batch_content)
+                for label, mir_func_embedding in zip(labels, mir_func_embeddings):
+                    d[label] = mir_func_embedding
+        self.save_mir_embeddings(d)
+
+    def dum_test(self, file_path):
+        inner_loader = DataLoader(file_path)
+        mir_d = self.load_mir_embeddings()
+        mir_embeddings, mir_labels = []
+        for k, v in mir_d.items():
+            mir_embeddings.append(v)
+            mir_labels.append(k)
+        mir_embeddings = torch.stack(mir_embeddings)
+        bin_d = inner_loader.get_bin_funcs()
+        correct, tol = 0, 0
+        with torch.no_grad():
+            for k, v in bin_d.items():
+                if k not in mir_d:
+                    continue
+                bin_embeddings = self.deal_batch_bin(v)
+                predict_labels = [mir_labels[self.retrieve(bin_embedding, mir_embeddings)]
+                                  for bin_embedding in bin_embeddings]
+                tol += len(predict_labels)
+                correct += sum([1 if k ==
+                               predict else 0 for predict in predict_labels])
+        print(f'Correctness: {100 * correct/tol}%')
+
+    def practicle_test(self):
+        raise NotImplementedError
 
     def deal_batch(self, batch_content):
         bin_bbs_list, bin_edges_list, mir_bbs_list, mir_edges_list, func_label_list = batch_content
@@ -132,6 +156,12 @@ class Bin2Mir():
         bin_func_embeddings, mir_func_embeddings = self.model(
             bin_bbs_embeddings_list, bin_edges_list, mir_bbs_onehots_list, mir_edges_list)
         return bin_func_embeddings, mir_func_embeddings, func_label_list
+
+    def deal_batch_bin(self, batch_content):
+        bin_bbs_list, bin_edges_list = batch_content
+        bin_bbs_embeddings_list = [
+            self.model.cbow.batch_lookup(self.asm_tokenizer(bin_bbs)) for bin_bbs in bin_bbs_list]
+        return self.model.embed_bin(bin_bbs_embeddings_list, bin_edges_list)
 
     @staticmethod
     def add_vnode(nodes_embedding: torch.tensor) -> torch.tensor:
@@ -151,17 +181,15 @@ class Bin2Mir():
         ref_dis = distances[ref_idx]
         return min_dis, ref_dis
 
+    # Used for train, no dup symbols
     @staticmethod
-    def norm_weighted_samples(bin_embeddings, mir_embeddings, labels, dim=128, s=1.0):
+    def norm_weighted_samples(bin_embeddings, mir_embeddings, dim=128, s=1.0):
         ret = []
-        for bin_embedding, label in zip(bin_embeddings, labels):
+        for i, bin_embedding in enumerate(bin_embeddings):
             dis_vec = mir_embeddings - bin_embedding
             distances = torch.norm(dis_vec, p=2, dim=-1)
-            weighted_log = -(dim - 2) * distances - (dim - 3) / \
-                2 * (1 - torch.pow(distances, 2) / 4)
-            for i, l in enumerate(labels):
-                if l == label:
-                    weighted_log[i] = -10000
+            weighted_log = -(dim - 2) * distances - (dim - 3)
+            weighted_log[i] = -10000
             m = nn.Softmax()
             weighted = m(s * weighted_log)
             idx = torch.multinomial(weighted, num_samples=1).item()

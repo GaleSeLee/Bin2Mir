@@ -15,7 +15,7 @@ class Bin2MirModel(nn.Module):
         super().__init__()
         self.dpcnn = DPCNN(**cnn_params)
         self.mir_gnn = GGNN(**mir_gnn_params)
-        self.bin_gnn = GGNN(**bin_gnn_params)
+        self.bin_gnn = GGNN(propo_class=EdgePropogator, **bin_gnn_params)
         self.hbmp = HBMP(**hbmp_params)
         self.cbow = CBOW(**cbow_params)
         self.bn = nn.BatchNorm1d(mir_gnn_params['output_dim'], affine=False)
@@ -28,9 +28,9 @@ class Bin2MirModel(nn.Module):
                                   for bin_bbs_embeddings in bin_bbs_embeddings_list]
         mir_bbs_embedding_list = [self.dpcnn(mir_bbs_onehots)
                                   for mir_bbs_onehots in mir_bbs_onehots_list]
-        bin_A_list = [self.edges2tensor(bin_edges, len(bin_bbs_embedding), with_vnode)
+        bin_A_list = [self.edges2tensor(bin_edges, len(bin_bbs_embedding), with_vnode=with_vnode)
                       for bin_edges, bin_bbs_embedding in zip(bin_edges_list, bin_bbs_embedding_list)]
-        mir_A_list = [self.edges2tensor(mir_edges, len(mir_bbs_embedding), with_vnode)
+        mir_A_list = [self.edges2tensor(mir_edges, len(mir_bbs_embedding), with_edge_type=True, with_vnode=with_vnode)
                       for mir_edges, mir_bbs_embedding in zip(mir_edges_list, mir_bbs_embedding_list)]
         bin_cfg_embedding_list = [
             self.bin_gnn(bin_bbs_embedding if not with_vnode else self.add_vnode(
@@ -55,13 +55,15 @@ class Bin2MirModel(nn.Module):
 
     @staticmethod
     # params not take vnode into account
-    def edges2tensor(edge_list, max_idx, with_vnode=True):
+    # support edge_type from 0 to 13
+    def edges2tensor(edge_list, max_idx, with_edge_type=False, with_vnode=False):
         offset = 1 if with_vnode else 0
         dims = (max_idx + offset, max_idx + offset)
-        ret = torch.zeros(dims)
+        ret = torch.zeros(dims, dtype=torch.long)
         for edge in edge_list:
-            ret[edge[-2] + offset, edge[-1] + offset] = 1
+            ret[edge[-2] + offset, edge[-1] + offset] = 2 + (edge[0] if with_edge_type else 0)
         if with_vnode:
+            # edge label 1 reserved for vnode
             ret[0, :], ret[:, 0] = 1, 1
         return ret.to(DEVICE)
 
@@ -70,15 +72,19 @@ class Bin2MirModel(nn.Module):
 class HBMP(nn.Module):
 
     # hidden size if equal to 2 * output size
-    def __init__(self, **kwargs):
+    def __init__(self, out_dim, **kwargs):
         super(HBMP, self).__init__()
         self.cells = (2 if kwargs.get('bidirectional', False)
                       else 1) * kwargs.get('num_layers', 1)
-        self.hidden_dim = kwargs.get('hidden_size', 16)
+        self.hidden_dim = kwargs.get('hidden_size', 64)
         self.max_pool = nn.AdaptiveMaxPool1d(1)
         self.rnn1 = nn.LSTM(**kwargs)
         self.rnn2 = nn.LSTM(**kwargs)
         self.rnn3 = nn.LSTM(**kwargs)
+        self.linear_out = nn.Sequential(
+            nn.Linear(6 * kwargs.get('hidden_size', 64), out_dim),
+            nn.ReLU()
+        )
 
     def forward(self, inputs):
         batch_size = inputs.size()[0]
@@ -93,7 +99,7 @@ class HBMP(nn.Module):
         emb3 = self.max_pool(out3.permute(0, 2, 1)).permute(0, 2, 1)
         emb = torch.cat([emb1, emb2, emb3], 2)
         emb = emb.squeeze(1)
-        return emb
+        return self.linear_out(emb)
 
 
 # Gated Propogator for GGNN
@@ -104,32 +110,41 @@ class Propogator(nn.Module):
         super(Propogator, self).__init__()
         self.reset_gate = nn.Sequential(
             nn.Linear(state_dim*3, state_dim),
-            nn.Sigmoid()
-        )
+            nn.Sigmoid())
         self.update_gate = nn.Sequential(
             nn.Linear(state_dim*3, state_dim),
-            nn.Sigmoid()
-        )
+            nn.Sigmoid())
         self.tansform = nn.Sequential(
             nn.Linear(state_dim*3, state_dim),
-            nn.Tanh()
-        )
+            nn.Tanh())
+
+    def aggregate(self, A: torch.tensor, state: torch.tensor):
+        return torch.mm(A.float(), state)
 
     def forward(self, state_in, state_out, state_cur, A_in):
         A_out = A_in.permute(1, 0)
-
-        a_in = torch.mm(A_in, state_in)
-        a_out = torch.mm(A_out, state_out)
+        a_in = self.aggregate(A_in, state_in)
+        a_out = self.aggregate(A_out, state_out)
         a = torch.cat((a_in, a_out, state_cur), -1)
-
         r = self.reset_gate(a)
         z = self.update_gate(a)
         joined_input = torch.cat((a_in, a_out, r * state_cur), -1)
         h_hat = self.tansform(joined_input)
-
         output = (1 - z) * state_cur + z * h_hat
-
         return output
+
+
+class EdgePropogator(Propogator):
+
+    def __init__(self, state_dim):
+        super().__init__(state_dim)
+        self.edge_lookup = nn.Embedding(
+            num_embeddings=16,
+            embedding_dim=state_dim)
+
+    def aggregate(self, A, state):
+        A = self.edge_lookup(A)
+        return torch.sum(torch.mul(A, state), dim=1)
 
 
 class GGNN(nn.Module):
@@ -138,7 +153,7 @@ class GGNN(nn.Module):
     Take one graph as input and generate nodes' embedding
     """
 
-    def __init__(self, state_dim, n_steps, output_dim):
+    def __init__(self, state_dim, n_steps, output_dim, propo_class=Propogator):
         super(GGNN, self).__init__()
 
         self.state_dim = state_dim
@@ -148,7 +163,7 @@ class GGNN(nn.Module):
         self.out_fc = nn.Linear(self.state_dim, self.state_dim)
 
         # Propogation Model
-        self.propogator = Propogator(self.state_dim)
+        self.propogator = propo_class(self.state_dim)
 
         # Output Model
         self.out = nn.Sequential(
@@ -181,7 +196,7 @@ class DPCNN(nn.Module):
     DPCNN for sentences classification.
     """
 
-    def __init__(self, channel_size, input_dim, output_dim=64):
+    def __init__(self, channel_size, input_dim, output_dim):
         super(DPCNN, self).__init__()
         self.channel_size = channel_size
         self.conv_region_embedding = nn.Conv2d(
@@ -236,8 +251,8 @@ class CBOW(nn.Module):
     def __init__(self, vocab_size, embedding_dim=64, context_size=2):
         super(CBOW, self).__init__()
         self.embeddings = nn.Embedding(vocab_size, embedding_dim)
-        self.linear1 = nn.Linear(2 * context_size * embedding_dim, 64)
-        self.linear2 = nn.Linear(64, vocab_size)
+        self.linear1 = nn.Linear(2 * context_size * embedding_dim, embedding_dim)
+        self.linear2 = nn.Linear(embedding_dim, vocab_size)
 
     def forward(self, context):
         embeds = self.embeddings(context).view((1, -1))

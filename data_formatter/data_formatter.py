@@ -111,6 +111,29 @@ class Formatter():
         with open(os.path.join(self.formatted_dir, 'output_data', f'{file_name}.json'), 'w') as f:
             json.dump(dump_dict, f, indent=2)
 
+    def dump_match_perfile(self, dump_dir, max_per_mir=10, **kwargs):
+        dump_dict = {}
+        bin_funcs = self.bin_analyser.load_matched(**kwargs)
+        random.shuffle(bin_funcs)
+        for func in bin_funcs:
+            mir_identifier = func.match_mir
+            if func.match_mir not in dump_dict:
+                mir_func = self.session.query(MirFunc).filter_by(
+                    identifier=mir_identifier).first()
+                self.mir_analyser.load_func_data(mir_func)
+                dump_dict[mir_identifier] = {
+                    'mir_label': mir_func.into_str(generic=False),
+                    'mir': mir_func.into_dict(),
+                    'bin': []}
+            if len(dump_dict[mir_identifier]['bin']) < max_per_mir:
+                self.bin_analyser.load_func_data(func)
+                dump_dict[mir_identifier]['bin'].append(func.into_dict())
+        full_dir = os.path.join(self.formatted_dir, 'output_data', dump_dir)
+        os.makedirs(full_dir, exist_ok=True)
+        for v in dump_dict.values():
+            with open(os.path.join(full_dir, f'{v["mir_label"]}.json'), 'w') as f:
+                json.dump(v, f)
+
     def dump_matched_mir(self, file_name='matched_mir', **kwargs):
         mir_list, bin_list = [], []
         bin_funcs = self.bin_analyser.load_matched(**kwargs)
@@ -120,7 +143,8 @@ class Formatter():
             mir_list.append(mir_func.into_str(generic=True))
             bin_list.append(func.into_str(generic=True))
         s_dict = statistic_dict(mir_list, bin_list)
-        file_path = os.path.join(self.formatted_dir, 'statistic', f'{file_name}.json')
+        file_path = os.path.join(
+            self.formatted_dir, 'statistic', f'{file_name}.json')
         with open(file_path, 'w') as f:
             json.dump(s_dict, f, indent=2)
 
