@@ -82,6 +82,9 @@ class Formatter():
         self.session.commit()
         with open(os.path.join(self.formatted_dir, 'statistic', f'{file_name}.json'), 'w') as f:
             json.dump({
+                'missed_cnt': len(missed_list),
+                'matched_cnt': len(matched_list),
+                'dup_cnt': len(dup_list),
                 'missed_list': missed_list,
                 'matched_list': matched_list,
                 'dup_list': dup_list,
