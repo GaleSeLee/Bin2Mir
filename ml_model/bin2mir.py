@@ -12,14 +12,15 @@ class Bin2Mir():
 
     def __init__(self, ml_dir, asm_embedding_dim=64, mir_cnn_chan=96,
                  lstm_hidden_dim=64, lstm_layer=1, propo_steps=3,
-                 final_embedding_dim=96):
+                 final_embedding_dim=96, with_vnode=True, with_normalize=True):
         self.base_dir = ml_dir
         self.asm_tokenizer = AsmTokenizer()
         self.asm_tokenizer.load_dict(os.path.join(self.base_dir, 'models'))
         self.asm_tokenizer.fix_vocab()
         self.mir_encoder = MirCharTokenizer()
         model_params = {
-            'with_normalize': False,
+            'with_vnode': with_vnode,
+            'with_normalize': with_normalize,
             'cnn_params': {
                 'channel_size': mir_cnn_chan,
                 'input_dim': 96,  # printable ascii
@@ -80,7 +81,8 @@ class Bin2Mir():
 
     def train(self, file_path, train_meta={}):
 
-        inner_loader = DataLoader(file_path)
+        inner_loader = DataLoader(file_path, bin_bb_limit=train_meta.get('bb_limit', 50),
+                                  mir_bb_limit=train_meta.get('mir_limit', 100))
         train_loader = torch.utils.data.DataLoader(
             dataset=inner_loader,
             batch_size=train_meta.get('BATCH_SIZE', 64),

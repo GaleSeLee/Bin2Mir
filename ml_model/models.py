@@ -5,17 +5,19 @@ from torch.autograd import Variable
 
 
 DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+MIR_EDGE_TYPE = 14
+BIN_EDGE_TYPE = 2
 
 
 class Bin2MirModel(nn.Module):
 
     def __init__(self, cnn_params, bin_gnn_params,
                  mir_gnn_params, hbmp_params, cbow_params,
-                 with_vnode=True, with_normalize=True):
+                 with_vnode, with_normalize):
         super().__init__()
         self.dpcnn = DPCNN(**cnn_params)
-        self.mir_gnn = GGNN(**mir_gnn_params)
-        self.bin_gnn = GGNN(propo_class=EdgePropogator, **bin_gnn_params)
+        self.mir_gnn = GGNN(edge_type=MIR_EDGE_TYPE, **mir_gnn_params)
+        self.bin_gnn = GGNN(edge_type=BIN_EDGE_TYPE, **bin_gnn_params)
         self.hbmp = HBMP(**hbmp_params)
         self.cbow = CBOW(**cbow_params)
         self.bn = nn.BatchNorm1d(mir_gnn_params['output_dim'], affine=False)
@@ -45,7 +47,7 @@ class Bin2MirModel(nn.Module):
         mir_embeddings = torch.stack(mir_cfg_embedding_list)
         bin_embeddings = torch.stack(bin_cfg_embedding_list)
         if self.with_normalize:
-            return F.normalize(self.bn(bin_embeddings)), F.normalize(self.bn(mir_embeddings))
+            return F.normalize(self.bn(bin_embeddings), dim=-1), F.normalize(self.bn(mir_embeddings), dim=-1)
         return bin_embeddings, mir_embeddings
 
     @staticmethod
@@ -56,14 +58,14 @@ class Bin2MirModel(nn.Module):
     @staticmethod
     # params not take vnode into account
     # support edge_type from 0 to 13
-    def edges2tensor(edge_list, max_idx, with_edge_type=False, with_vnode=False):
+    def edges2tensor(edge_list, max_idx, with_vnode=False):
         offset = 1 if with_vnode else 0
-        dims = (max_idx + offset, max_idx + offset)
-        ret = torch.zeros(dims, dtype=torch.long)
+        # 0 for no edge. If use vnode, 1 for vedge
+        edge_label_offset = 2 if with_vnode else 1
+        ret = torch.zeros((max_idx + offset, max_idx + offset), dtype=torch.long)
         for edge in edge_list:
-            ret[edge[-2] + offset, edge[-1] + offset] = 2 + (edge[0] if with_edge_type else 0)
+            ret[edge[1] + offset, edge[2] + offset] = edge_label_offset + edge[0]
         if with_vnode:
-            # edge label 1 reserved for vnode
             ret[0, :], ret[:, 0] = 1, 1
         return ret.to(DEVICE)
 
@@ -136,10 +138,10 @@ class Propogator(nn.Module):
 
 class EdgePropogator(Propogator):
 
-    def __init__(self, state_dim):
+    def __init__(self, state_dim, edge_type):
         super().__init__(state_dim)
         self.edge_lookup = nn.Embedding(
-            num_embeddings=16,
+            num_embeddings=edge_type,
             embedding_dim=state_dim)
 
     def aggregate(self, A, state):
@@ -153,23 +155,22 @@ class GGNN(nn.Module):
     Take one graph as input and generate nodes' embedding
     """
 
-    def __init__(self, state_dim, n_steps, output_dim, propo_class=Propogator):
+    def __init__(self, state_dim, n_steps, output_dim, edge_type=1, propo_class=EdgePropogator):
         super(GGNN, self).__init__()
 
-        self.state_dim = state_dim
         self.n_steps = n_steps
 
-        self.in_fc = nn.Linear(self.state_dim, self.state_dim)
-        self.out_fc = nn.Linear(self.state_dim, self.state_dim)
+        self.in_fc = nn.Linear(state_dim, state_dim)
+        self.out_fc = nn.Linear(state_dim, state_dim)
 
         # Propogation Model
-        self.propogator = propo_class(self.state_dim)
+        self.propogator = propo_class(state_dim, edge_type)
 
         # Output Model
         self.out = nn.Sequential(
-            nn.Linear(self.state_dim, self.state_dim),
+            nn.Linear(state_dim, state_dim),
             nn.Tanh(),
-            nn.Linear(self.state_dim, output_dim)
+            nn.Linear(state_dim, output_dim)
         )
 
         self._initialization()
@@ -192,9 +193,6 @@ class GGNN(nn.Module):
 
 
 class DPCNN(nn.Module):
-    """
-    DPCNN for sentences classification.
-    """
 
     def __init__(self, channel_size, input_dim, output_dim):
         super(DPCNN, self).__init__()
