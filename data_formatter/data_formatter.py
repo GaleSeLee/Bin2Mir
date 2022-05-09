@@ -113,7 +113,7 @@ class Formatter():
             
             
     # kwargs work as filter arguements for bin funcs
-    def dump_match(self, file_name='matched_info', max_per_mir=10, **kwargs):
+    def dump_match(self, file_name='matched_info', max_per_mir=10, extend_only=True, **kwargs):
         dump_dict = {
             'mir2bin': {},
             'mir_funcs': {},
@@ -128,7 +128,7 @@ class Formatter():
                     identifier=mir_identifier).first()
                 self.mir_analyser.load_func_data(mir_func)
                 dump_dict['mir2bin'][mir_identifier] = []
-                dump_dict['mir_funcs'][mir_identifier] = mir_func.into_dict()
+                dump_dict['mir_funcs'][mir_identifier] = mir_func.into_dict(extend_only=extend_only)
             if len(dump_dict['mir2bin'][func.match_mir]) < max_per_mir:
                 self.bin_analyser.load_func_data(func)
                 dump_dict['mir2bin'][mir_identifier].append(func.identifier)

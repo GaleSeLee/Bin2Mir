@@ -266,7 +266,12 @@ class MirFunc(BaseFunc):
     def get_data_crate(self):
         return self.crate
 
-    def into_dict(self, all_info=False):
+    def into_dict(self, all_info=False, extend_only=False):
+        if extend_only and self.extended:
+            return {
+                'bb_list': [bb.into_dict() for bb in self.ex_bb_list],
+                'edge_list': self.ex_edge_list
+            }
         ret = super().into_dict(all_info)
         ret['bb_list'] = [bb.into_dict() for bb in self.bb_list]
         if self.extended:
