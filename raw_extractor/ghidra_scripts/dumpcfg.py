@@ -1,12 +1,11 @@
 import json
-import ghidra
+import os
 
+import ghidra
 from ghidra.app.decompiler import DecompInterface
 from ghidra.program.model.block import BasicBlockModel
 from ghidra.app.util.exporter import BinaryExporter
 
-from hashlib import sha1
-import binascii
 from java.io import File
 
 try:
@@ -45,13 +44,12 @@ def gen_cfg(func):
     #decompile_res = decompile.decompileFunction(func, 30, getMonitor())
     #cur_high_func = decompile_res.getFunction()
 
-    blocks = get_basic_blocks(func.getBody())
+    body = func.getBody()
+    blocks = get_basic_blocks(body)
     meta_dict = {
-        "function_name": func.toString().replace("--", "::"), 
+        "function_name": func.comment,
         "basic_block": []
     }
-    if meta_dict["function_name"].startswith("<EXTERNAL>"):
-        return None
 
     for block in blocks:
         base_id = blocks.index(block)
@@ -76,7 +74,11 @@ def gen_cfg(func):
             elif des_type == des_type.INDIRECTION:
                 ind_jumps.append(getSymbolAt(addr).getName())
             else:
-                call_list.append(addr.getOffset())
+                # Ghidra analyser may fail to analyse some function
+                target_func = getFunctionAt(addr)
+                if target_func and func.comment:
+                    call_list.append(func.comment)
+                # call_list.append(addr.getOffset())
 
         block_dict["goto"] = cfg_list
         block_dict["cond_goto"] = cond_jumps 
@@ -88,25 +90,28 @@ def gen_cfg(func):
         meta_dict["basic_block"].append(block_dict)
     meta_dict['addr_ranges'] = list(map(
         lambda x: (x.getMinAddress().getOffset(), x.getMaxAddress().getOffset()),
-        func.body.getAddressRanges()))
+        body.getAddressRanges()))
     # meta_dict["identifier"] = binascii.hexlify(sha1(meta_dict["function_name"] + str(meta_dict['addr_ranges'][0])).digest())
     meta_dict["identifier"] = func.getEntryPoint().toString()
 
     asv = func.getBody()
     exporter = BinaryExporter()
-    path = "/Users/liuzhanpeng/working/rust_analy/dumped/bin/" + meta_dict["identifier"] + ".bin"
-    f = File(path)
+    base_dir = os.path.join("PATH_DIR", getProgramFile().getName())
+    f = File(os.path.join(base_dir, 'bin', meta_dict["identifier"] + ".bin"))
     ret = exporter.export(f, currentProgram, asv, None)
 
     return meta_dict
 
 if __name__ == '__main__':
-    path = "/Users/liuzhanpeng/working/rust_analy/dumped/cfgs.json"
+    base_dir = os.path.join("PATH_DIR", getProgramFile().getName())
+    os.makedirs(os.path.join(base_dir, 'bin'))
     func_list = get_functions()
     func_blocks = []
     for func in func_list:
+        if not func.comment:
+            continue
         cfg_info = gen_cfg(func)
         if cfg_info:
             func_blocks.append(cfg_info)
-    with open(path, 'w') as f:
+    with open(os.path.join(base_dir, 'cfg.json'), 'w') as f:
         json.dump(func_blocks, f, indent=2)
