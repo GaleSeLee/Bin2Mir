@@ -60,7 +60,7 @@ class BaseAnalyser():
         data_path = os.path.join(self.formatted_dir, 'func_data')
         for crate in self.crate_data:
             with open(os.path.join(data_path, f'{crate}.json'), 'w') as f:
-                json.dump(self.crate_data[crate], f)
+                json.dump(self.crate_data[crate], f, indent=2)
 
     def dump_statistic(self, funcs, file_name):
         dump_path = os.path.join(
@@ -229,8 +229,8 @@ class MirAnalyser(BaseAnalyser):
     def extend_query(self, decl):
         # TODO: 
         # Handle closure
-        # if 'move _' in decl:
-        #     raise ValueError('Closure')
+        if 'move _' in decl:
+            return ExtendErrorCode.Closure, None
 
         # This MirFunc is not normally init, only used to
         #   get the identifier here
@@ -240,12 +240,15 @@ class MirAnalyser(BaseAnalyser):
         #   it would be better to prevent inline outside.
         if identifier in self.query_buf:
             return ExtendErrorCode.Recur, None
+        self.query_buf.add(identifier)
         targets = self.load(identifier=identifier)
         if not targets:
             return ExtendErrorCode.NotFound, None
         if len(targets) > 1:
             raise ValueError
         target_func = targets[-1]
+        if target_func.duplicate_def:
+            return ExtendErrorCode.DupDef, None
         if target_func.matched:
             return ExtendErrorCode.Matched, None
         self.load_func_data(target_func)

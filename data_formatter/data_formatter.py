@@ -88,16 +88,29 @@ class Formatter():
                 'missed_list': missed_list,
                 'matched_list': matched_list,
                 'dup_list': dup_list,
-            }, f)
+            }, f, indent=2)
 
-    def extend_matched_mir(self, mir_funcs):
+    def extend_matched_mir(self, mir_funcs, statistic_file='mir_extend'):
         for mir_func in filter(lambda x: x.matched, mir_funcs):
             if not mir_func.full_info:
                 self.mir_analyser.load_func_data(mir_func)
-                # print(mir_func.into_str())
+                # Query buf keeps the query made in this turn,
+                #   Prevent recursive function ruin the process
+                self.mir_analyser.query_buf.clear()
                 mir_func.extend_cfg(self.mir_analyser.extend_query, self.mir_analyser.update_extend)
         self.mir_analyser.flush_func_data()
         self.session.commit()
+
+        mir_funcs = self.mir_analyser.load(matched=True, extended=True)
+        for f in mir_funcs:
+            self.mir_analyser.load_func_data(f)
+        dump_info = {
+            func.into_str(): {'perfect': func.perfect_extended, 'records': func.extend_record}
+            for func in filter(lambda x: x.extend_record, mir_funcs)
+        }
+        with open(os.path.join(self.formatted_dir, 'statistic', f'{statistic_file}.json'), 'w') as f:
+            json.dump(dump_info, f, indent=2)
+            
             
     # kwargs work as filter arguements for bin funcs
     def dump_match(self, file_name='matched_info', max_per_mir=10, **kwargs):

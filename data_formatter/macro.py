@@ -28,6 +28,8 @@ class ExtendErrorCode:
     Matched  = 1
     NotFound = 2
     Recur    = 3
+    Closure  = 4
+    DupDef   = 5
 
     @staticmethod
     def errno2str(errno):
@@ -37,8 +39,12 @@ class ExtendErrorCode:
             return 'Matched'
         elif errno == 2:
             return 'Not Found'
-        else:
+        elif errno == 3:
             return 'Recur'
+        elif errno == 4:
+            return 'Closure'
+        else:
+            return 'Duplicate Def'
 
 
 class FunctionType:

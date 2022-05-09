@@ -274,7 +274,7 @@ class MirFunc(BaseFunc):
             #   otherwise, a deepcopy is invoked.
             if not self.bb_list is self.ex_bb_list:
                 ret['ex_bb_list'] = [bb.into_dict() for bb in self.ex_bb_list]
-                ret['ex_edge_list'] = self.ex_edge_list
+                ret['ex_edge_list'] = self.bblist2edgelist(self.ex_bb_list)
             ret['extend_record'] = self.extend_record
         return ret
 
@@ -300,10 +300,12 @@ class MirFunc(BaseFunc):
         if self.extended:
             return
         extra_list = []
+        modification = False
         self.perfect_extended = True
         self.extend_record = []
         # print('\t' + self.into_str())
-        for bb in self.bb_list:
+        self.ex_bb_list = deepcopy(self.bb_list)
+        for bb in self.ex_bb_list:
             if isinstance(bb.term, dict) and bb.term.get('Call', None) is not None:
                 target_fn_path = bb.term['Call']['func']
                 errno, target = query_call_back(target_fn_path)
@@ -314,20 +316,21 @@ class MirFunc(BaseFunc):
                 self.extend_record.append(
                     f'bb id: {bb.id}, func: {target_fn_path}, errno: {ExtendErrorCode.errno2str(errno)}')
                 if target:
+                    modification = True
                     self.perfect_extended &= target.perfect_extended
                     ret_idx = bb.term['Call']['dest']
                     idx_shift = len(self.bb_list) + len(extra_list) - 1
-                    for _bb in target.ex_bb_list:
+                    target_bb_list = deepcopy(target.ex_bb_list)
+                    for _bb in target_bb_list:
                         _bb.extend_shift(idx_shift, ret_idx)
-                    bb.statements.extend(target.ex_bb_list[0].statements)
+                    bb.statements.extend(target_bb_list[0].statements)
                     # If take inline, ignore unwrap path Underchange
-                    bb.term = target.ex_bb_list[0].term
-                    extra_list.extend(target.ex_bb_list[1:])
+                    bb.term = target_bb_list[0].term
+                    extra_list.extend(target_bb_list[1:])
                     # print('\t\t' + f'bb id: {bb.id}, func: {target_fn_path}, errno: {ExtendErrorCode.errno2str(errno)}, extend length: {len(target.ex_bb_list)}')
                 else:
                     self.perfect_extended = False
-        if extra_list:
-            self.ex_bb_list = deepcopy(self.bb_list)
+        if modification:
             self.ex_bb_list.extend(extra_list)
             self.ex_edge_list = self.bblist2edgelist(self.bb_list)
         else:
