@@ -87,6 +87,15 @@ class Formatter():
                 'dup_list': dup_list,
             }, f)
 
+    def extend_matched_mir(self, mir_funcs):
+        for mir_func in filter(lambda x: x.matched, mir_funcs):
+            if not mir_func.full_info:
+                self.mir_analyser.load_func_data(mir_func)
+                # print(mir_func.into_str())
+                mir_func.extend_cfg(self.mir_analyser.extend_query, self.mir_analyser.update_extend)
+        self.mir_analyser.flush_func_data()
+        self.session.commit()
+            
     # kwargs work as filter arguements for bin funcs
     def dump_match(self, file_name='matched_info', max_per_mir=10, **kwargs):
         dump_dict = {
@@ -149,6 +158,8 @@ class Formatter():
             json.dump(s_dict, f, indent=2)
 
     def add_pair(self, bin_func, mir_func):
+        self.session.query(MirFunc).filter_by(identifier=mir_func.identifier).update(
+            {'matched': True})
         self.session.query(BinFunc).filter_by(identifier=bin_func.identifier).update(
             {'match_mir': mir_func.identifier})
 

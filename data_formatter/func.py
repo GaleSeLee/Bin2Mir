@@ -1,3 +1,4 @@
+from copy import deepcopy
 from functools import reduce
 import os
 import re
@@ -13,8 +14,8 @@ from sqlalchemy import (
 from sqlalchemy import orm
 
 from data_formatter.macro import (
-    FunctionAnalErrorCode, FunctionType,
-    RustDeclaration, MirEdge
+    ExtendErrorCode, FunctionAnalErrorCode, FunctionType,
+    RustDeclaration, MirEdge, BinEdge
 )
 
 
@@ -65,16 +66,17 @@ class BaseFunc(Base):
             self.impl_trait_decl = RustDeclaration(
                 self._tokenization(self.impl_trait_str))
 
+    # Generate identifier, and convert decl info into str.
     def _gen_identifier(self):
         self.decl_str = self.decl.into_str(generic=True)
         if self.ftype == FunctionType.Trait:
             self.impl_class_str = self.impl_class_decl.into_str(generic=True)
             self.impl_trait_str = self.impl_trait_decl.into_str(generic=True)
-        identity_str = self.crate + self.decl_str
+        identity_str = self.decl.into_str()
         if hasattr(self, 'target_crate'):
             identity_str += self.target_crate + self.bin_file_name
         if self.ftype == FunctionType.Trait:
-            identity_str += self.impl_class_str + self.impl_trait_str
+            identity_str += self.impl_class_decl.into_str() + self.impl_trait_decl.into_str()
         self.identifier = sha1(identity_str.encode()).digest().hex()
 
     def into_dict(self, all_info=False):
@@ -123,25 +125,29 @@ class BaseFunc(Base):
             self.ftype = FunctionType.Normal
             self.decl = RustDeclaration(tokens)
 
-    def into_str(self, generic=True):
+    def analyse_closure(self, closure_fn_path):
+        raise NotImplementedError
+
+    def into_str(self, generic=True, crate_and_type=False):
         if self.ftype == FunctionType.Closure:
             # Ignore Closure.
             return ''
+        crate_and_type_info = f'({self.crate}, {FunctionType.tno2str(self.ftype)}) ' if crate_and_type else ''
         if self.ftype == FunctionType.Trait:
             return ''.join([
-                f'({self.crate}, {self.ftype}) ',
+                crate_and_type_info,
                 f'impl {self.impl_trait_decl.into_str(generic=generic)} ',
                 f'for {self.impl_class_decl.into_str(generic=generic)} ',
                 f'{self.decl.into_str(generic=generic)}'
             ])
-        return f'({self.crate}, {self.ftype}) ' + self.decl.into_str(generic=generic)
+        return crate_and_type_info + self.decl.into_str(generic=generic)
 
     def coarse_eq(self, other, short=True, generic=False):
         if not (self.valid() and other.valid()):
             return False
         if self.ftype != other.ftype:
             return False
-        if self.crate != other.crate:
+        if not self.crate_equal(self.crate, other.crate):
             return False
         if self.ftype == FunctionType.Normal:
             return self.decl.coarse_eq(other.decl, short, generic)
@@ -151,6 +157,15 @@ class BaseFunc(Base):
 
     def __eq__(self, other):
         return self.into_str() == other.into_str()
+
+    @staticmethod
+    # Std re-exports some of the core and alloc crate,
+    #   consider them as the same one.
+    def crate_equal(crate_a, crate_b):
+        std_lib = ['std', 'core', 'alloc']
+        if crate_a in std_lib and crate_b in std_lib:
+            return True
+        return crate_a == crate_b
 
     @staticmethod
     def _tokenization(decl):
@@ -205,6 +220,9 @@ class MirFunc(BaseFunc):
     identifier = Column(String(63), ForeignKey(
         'function.identifier'), primary_key=True)
     duplicate_def = Column(Boolean, default=False)
+    matched = Column(Boolean, default=False)
+    extended = Column(Boolean, default=False)
+    perfect_extended = Column(Boolean, default=False)
 
     def __init__(self, crate, fndef_info, bb_list):
         super().__init__()
@@ -218,15 +236,18 @@ class MirFunc(BaseFunc):
     def analyse_def(self, fndef_info):
         if fndef_info.startswith('[closure@'):
             self.ftype = FunctionType.Closure
-            self.errno = FunctionAnalErrorCode.Closure
+            # self.errno = FunctionAnalErrorCode.Closure
+            self.origin_decl = fndef_info[len('[closure@'):]
         else:
             cur_bra, cur_ket = fndef_info.find('{'), fndef_info.find('}')
-            if fndef_info[cur_bra + 1:].find('{') != -1 or fndef_info[cur_ket + 1:].find('}') != -1:
+            if (cur_bra < 0 or cur_ket < 0 or fndef_info[cur_bra + 1:].find('{') != -1
+                    or fndef_info[cur_ket + 1:].find('}') != -1):
                 self.errno = FunctionAnalErrorCode.NotSupportedFormat
-                # print(fndef_info)
+            else:
+                self.origin_decl = fndef_info[cur_bra + 1: cur_ket]
         if self.valid():
             # self.analyse_signature(fndef_info[:cur_bra].strip())
-            self.analyse_decl(fndef_info[cur_bra + 1: cur_ket])
+            self.analyse_decl(self.origin_decl)
 
     def analyse_signature(self, sig):
         raise NotImplementedError
@@ -234,11 +255,7 @@ class MirFunc(BaseFunc):
     def analyse_bb_list(self):
         self.bb_list = [MirBb(id=bb[0], **bb[1]) for bb in self.raw_bb_list]
         self.raw_bb_list.clear()
-        self.edge_list = reduce(
-            lambda x, y: x + y,
-            [[(t[0], bb.id, t[1])
-                for t in filter(lambda x: x[1] is not None, bb.term_dst())]
-                for bb in self.bb_list])
+        self.edge_list = self.bblist2edgelist(self.bb_list)
 
     def get_bb_list(self):
         return [bb.into_str() for bb in self.bb_list]
@@ -251,13 +268,82 @@ class MirFunc(BaseFunc):
 
     def into_dict(self, all_info=False):
         ret = super().into_dict(all_info)
-        ret['bb_list'] = [bb.into_str() for bb in self.bb_list]
+        ret['bb_list'] = [bb.into_dict() for bb in self.bb_list]
+        if self.extended:
+            # If bb_list is ex_bb_list, no real extend is make,
+            #   otherwise, a deepcopy is invoked.
+            if not self.bb_list is self.ex_bb_list:
+                ret['ex_bb_list'] = [bb.into_dict() for bb in self.ex_bb_list]
+                ret['ex_edge_list'] = self.ex_edge_list
+            ret['extend_record'] = self.extend_record
         return ret
 
-    def load_data(self, edge_list, bb_list):
+    def load_data(self, edge_list, bb_list, ex_edge_list=[], ex_bb_list=[], extend_record=[]):
         self.edge_list = edge_list
         self.bb_list = [MirBb(**bb) for bb in bb_list]
+        if self.extended:
+            self.ex_edge_list = ex_edge_list if ex_edge_list else self.edge_list
+            self.ex_bb_list = [
+                MirBb(**bb) for bb in ex_bb_list] if ex_bb_list else self.bb_list
+            self.extend_record = extend_record
         self.full_info = True
+
+    # Unstable Function to deal with inline problem in binary
+    # Query works as a callback, determine whether
+    #   extend this call. If it does, return the
+    #   the callee. Otherwise, return None
+    # The returned func should have been extended
+    #   if needed.
+    def extend_cfg(self, query_call_back, save_call_back):
+        if not self.full_info:
+            raise ValueError(f'{self} not with full info')
+        if self.extended:
+            return
+        extra_list = []
+        self.perfect_extended = True
+        self.extend_record = []
+        # print('\t' + self.into_str())
+        for bb in self.bb_list:
+            if isinstance(bb.term, dict) and bb.term.get('Call', None) is not None:
+                target_fn_path = bb.term['Call']['func']
+                errno, target = query_call_back(target_fn_path)
+                # if 'propagate_settings' in target_fn_path:
+                # print('emmm', 'target_fn_path')
+                # print(target.into_dict())
+                # raise ValueError
+                self.extend_record.append(
+                    f'bb id: {bb.id}, func: {target_fn_path}, errno: {ExtendErrorCode.errno2str(errno)}')
+                if target:
+                    self.perfect_extended &= target.perfect_extended
+                    ret_idx = bb.term['Call']['dest']
+                    idx_shift = len(self.bb_list) + len(extra_list) - 1
+                    for _bb in target.ex_bb_list:
+                        _bb.extend_shift(idx_shift, ret_idx)
+                    bb.statements.extend(target.ex_bb_list[0].statements)
+                    # If take inline, ignore unwrap path Underchange
+                    bb.term = target.ex_bb_list[0].term
+                    extra_list.extend(target.ex_bb_list[1:])
+                    # print('\t\t' + f'bb id: {bb.id}, func: {target_fn_path}, errno: {ExtendErrorCode.errno2str(errno)}, extend length: {len(target.ex_bb_list)}')
+                else:
+                    self.perfect_extended = False
+        if extra_list:
+            self.ex_bb_list = deepcopy(self.bb_list)
+            self.ex_bb_list.extend(extra_list)
+            self.ex_edge_list = self.bblist2edgelist(self.bb_list)
+        else:
+            self.ex_bb_list = self.bb_list
+            self.ex_edge_list = self.edge_list
+        self.extended = True
+        save_call_back(self)
+
+    @staticmethod
+    def bblist2edgelist(bb_list):
+        edge_list = reduce(
+            lambda x, y: x + y,
+            [[(t[0], bb.id, t[1])
+                for t in filter(lambda x: x[1] is not None, bb.term_dst())]
+                for bb in bb_list])
+        return edge_list
 
 
 class MirBb():
@@ -316,6 +402,25 @@ class MirBb():
                     (MirEdge.false_edge, d.get('imaginary_target', d.get('unwind')))]
         return []
 
+    def extend_shift(self, offset, ret_idx):
+        self.id += offset
+        if isinstance(self.term, str):
+            if self.term.lower() == 'return':
+                self.term = {
+                    'Goto': {
+                        'target': ret_idx
+                    }
+                }
+            return
+        for d in self.term.values():
+            if 'targets' in d:
+                d['targets'] = [t + offset for t in d['targets']]
+            else:
+                for x in ['dest', 'cleanup', 'target', 'unwind',
+                          'resume', 'drop', 'real_target', 'imaginary_target']:
+                    if d.get(x) is not None:
+                        d[x] += offset
+
 
 class BinFunc(BaseFunc):
     __tablename__ = 'bin_func'
@@ -345,16 +450,13 @@ class BinFunc(BaseFunc):
             self.analyse_bb_list(info_dict['basic_block'])
 
     def analyse_decl(self, decl):
-        super().analyse_decl(self.adjust_decl(decl))
+        super().analyse_decl(decl)
         if not self.valid():
             return
         if self.ftype == FunctionType.Normal:
             self.crate = self.decl.path[0][0]
-            self.decl.replace_export()
         elif self.ftype == FunctionType.Trait:
             self.crate = self.impl_class_decl.path[0][0]
-            self.impl_class_decl.replace_export()
-            self.impl_trait_decl.replace_export()
         if self.crate and not self.crate.islower():
             self.errno = FunctionAnalErrorCode.NotSupportedFormat
 
@@ -362,9 +464,9 @@ class BinFunc(BaseFunc):
         for bb in bb_list:
             # temporally ignore indirect jump
             for tg in bb['goto']:
-                self.edge_list.append((bb['id'], tg))
+                self.edge_list.append((BinEdge.Unconditional, bb['id'], tg))
             for ctg in bb['cond_goto']:
-                self.edge_list.append((bb['id'], ctg))
+                self.edge_list.append((BinEdge.Conditional, bb['id'], ctg))
         self.block_length_list = list(
             map(lambda x: x[1] + 1 - x[0], [bb['addr_range'] for bb in bb_list]))
 
@@ -439,11 +541,6 @@ class BinFunc(BaseFunc):
             ))
             ret.append(opcode + ' ' + ','.join(oprands))
         return '\n'.join(ret)
-
-    # Unstable
-    @staticmethod
-    def adjust_decl(decl):
-        return decl.replace('_as_', ' as ').replace('>as_', '> as ').replace('<impl_', '<impl ')
 
 
 def create_scheme(engine):

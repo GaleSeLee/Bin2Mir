@@ -1,31 +1,44 @@
-# Use a crate::module coarse granularity
-# Thus it is possible a moduler in one crate corresponds to
-#   multiple crate.
-# Do not consider rename into consideration yet
-ReExportDict = {
-    'std': {
-        'core': [
-            'any', 'array', 'async_iter', 'cell', 'clone', 'cmp', 'future',
-            'hash', 'hint', 'convert', 'default', 'iter', 'pin', 'option',
-            'ops', 'mem', 'marker', 'usize', 'result', 'isize', 'ptr', 'intrinsics',
-            # Below are from alloc but in the essence are also from core
-            'fmt', 'borrow', 'slice', 'str', 'alloc'
-        ],
-        'alloc': [
-            'boxed', 'rc', 'string', 'vec', 'borrow', 'alloc', 'slice', 'str', 'sync'
-        ]
-    }
-}
-
-
 class FunctionAnalErrorCode:
     NoError = 0
     NotSupportedFormat = 1
     Dumplicate = 2
     # Inconsistent Length or Too small
     BinFileError = 4
-    NotWantedCrate = 0x10
-    Closure = 0x20
+    NotWantedCrate = 8
+    Closure = 0x10
+
+    @staticmethod
+    def errno2str(errno):
+        ret = []
+        if errno & 1:
+            ret.append('NotSupportedFormat')
+        if errno & 2:
+            ret.append('Dumplicate')
+        if errno & 4:
+            ret.append('BinFileError')
+        if errno & 8:
+            ret.append('NotWantedCrate')
+        if errno & 0x10:
+            ret.append('Closure')
+        return '&'.join(ret)
+
+
+class ExtendErrorCode:
+    NoError  = 0
+    Matched  = 1
+    NotFound = 2
+    Recur    = 3
+
+    @staticmethod
+    def errno2str(errno):
+        if errno == 0:
+            return 'No Error'
+        elif errno == 1:
+            return 'Matched'
+        elif errno == 2:
+            return 'Not Found'
+        else:
+            return 'Recur'
 
 
 class FunctionType:
@@ -33,6 +46,16 @@ class FunctionType:
     Normal = 0
     Trait = 1
     Closure = 2
+
+    @staticmethod
+    def tno2str(tno):
+        if tno == 0:
+            return 'Normal'
+        if tno == 1:
+            return 'Trait'
+        if tno == 2:
+            return 'Closure'
+        raise ValueError(tno)
 
 
 class RustDeclaration():
@@ -52,19 +75,10 @@ class RustDeclaration():
     def into_str(self, short=False, generic=False):
         return '::'.join([token[0] + (token[1] if generic else '') for token in (self.path[-2:] if short else self.path)])
 
-    # Unstable
-    # In mir, we can find std::xxx in core.json or alloc.json
-    # Temperally, we change path of bin function but keep the
-    #   crate unchanged to match up the mir
-    def replace_export(self):
-        # Try convert bin 2 mir path, which should be
-        #  Single Projection
-        # Only convert core & alloc to std for now
-        crate = self.path[0][0]
-        if not crate in ['core', 'alloc']:
-            return
-        if len(self.path) > 1 and self.path[1][0] in ReExportDict['std'][crate]:
-            self.path[0] = ('std', '')
+
+class BinEdge():
+    Conditional = 0
+    Unconditional = 1
 
 
 class MirEdge():
