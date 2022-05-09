@@ -16,8 +16,9 @@ class Bin2MirModel(nn.Module):
                  with_vnode, with_normalize):
         super().__init__()
         self.dpcnn = DPCNN(**cnn_params)
-        self.mir_gnn = GGNN(edge_type=MIR_EDGE_TYPE, **mir_gnn_params)
-        self.bin_gnn = GGNN(edge_type=BIN_EDGE_TYPE, **bin_gnn_params)
+        edge_offset = 2 if with_vnode else 1
+        self.mir_gnn = GGNN(edge_type=MIR_EDGE_TYPE + edge_offset, **mir_gnn_params)
+        self.bin_gnn = GGNN(edge_type=BIN_EDGE_TYPE + edge_offset, **bin_gnn_params)
         self.hbmp = HBMP(**hbmp_params)
         self.cbow = CBOW(**cbow_params)
         self.bn = nn.BatchNorm1d(mir_gnn_params['output_dim'], affine=False)
@@ -32,7 +33,7 @@ class Bin2MirModel(nn.Module):
                                   for mir_bbs_onehots in mir_bbs_onehots_list]
         bin_A_list = [self.edges2tensor(bin_edges, len(bin_bbs_embedding), with_vnode=with_vnode)
                       for bin_edges, bin_bbs_embedding in zip(bin_edges_list, bin_bbs_embedding_list)]
-        mir_A_list = [self.edges2tensor(mir_edges, len(mir_bbs_embedding), with_edge_type=True, with_vnode=with_vnode)
+        mir_A_list = [self.edges2tensor(mir_edges, len(mir_bbs_embedding), with_vnode=with_vnode)
                       for mir_edges, mir_bbs_embedding in zip(mir_edges_list, mir_bbs_embedding_list)]
         bin_cfg_embedding_list = [
             self.bin_gnn(bin_bbs_embedding if not with_vnode else self.add_vnode(

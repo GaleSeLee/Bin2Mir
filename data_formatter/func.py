@@ -266,19 +266,19 @@ class MirFunc(BaseFunc):
     def get_data_crate(self):
         return self.crate
 
-    def into_dict(self, all_info=False, extend_only=False):
+    def into_dict(self, all_info=False, extend_only=False, dump_mode=False):
         if extend_only and self.extended:
             return {
-                'bb_list': [bb.into_dict() for bb in self.ex_bb_list],
+                'bb_list': [bb.into_str() if dump_mode else bb.into_dict() for bb in self.ex_bb_list],
                 'edge_list': self.ex_edge_list
             }
         ret = super().into_dict(all_info)
-        ret['bb_list'] = [bb.into_dict() for bb in self.bb_list]
+        ret['bb_list'] = [bb.into_str() if dump_mode else bb.into_dict() for bb in self.bb_list]
         if self.extended:
             # If bb_list is ex_bb_list, no real extend is make,
             #   otherwise, a deepcopy is invoked.
             if not self.bb_list is self.ex_bb_list:
-                ret['ex_bb_list'] = [bb.into_dict() for bb in self.ex_bb_list]
+                ret['ex_bb_list'] = [bb.into_str() if dump_mode else bb.into_dict() for bb in self.ex_bb_list]
                 ret['ex_edge_list'] = self.bblist2edgelist(self.ex_bb_list)
             ret['extend_record'] = self.extend_record
         return ret

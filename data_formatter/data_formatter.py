@@ -128,7 +128,7 @@ class Formatter():
                     identifier=mir_identifier).first()
                 self.mir_analyser.load_func_data(mir_func)
                 dump_dict['mir2bin'][mir_identifier] = []
-                dump_dict['mir_funcs'][mir_identifier] = mir_func.into_dict(extend_only=extend_only)
+                dump_dict['mir_funcs'][mir_identifier] = mir_func.into_dict(extend_only=extend_only, dump_mode=True)
             if len(dump_dict['mir2bin'][func.match_mir]) < max_per_mir:
                 self.bin_analyser.load_func_data(func)
                 dump_dict['mir2bin'][mir_identifier].append(func.identifier)
